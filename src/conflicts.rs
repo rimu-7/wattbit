@@ -185,6 +185,19 @@ pub fn installed(running: &[Conflict]) -> Vec<Conflict> {
     found
 }
 
+/// Picks `one` or `many` by the number of distinct tools, so messages
+/// agree with [`summarize`]: "batt controls", "batt, AlDente control".
+pub fn agree<'a>(conflicts: &[Conflict], one: &'a str, many: &'a str) -> &'a str {
+    let mut tools: Vec<&str> = conflicts.iter().map(|c| c.tool.as_str()).collect();
+    tools.sort_unstable();
+    tools.dedup();
+    if tools.len() == 1 {
+        one
+    } else {
+        many
+    }
+}
+
 /// One-line summary grouping processes by tool, e.g.
 /// `batt (pid 7125), battery (actuallymentor) (pids 11877, 11904)`.
 pub fn summarize(conflicts: &[Conflict]) -> String {
@@ -438,6 +451,21 @@ mod tests {
         ]);
         assert_eq!(summary, "batt (pid 7), battery (pids 8, 9)");
         assert_eq!(summarize(&[c("AlDente", None)]), "AlDente");
+    }
+
+    #[test]
+    fn agreement_follows_distinct_tools() {
+        let c = |tool: &str, pid| Conflict {
+            tool: tool.into(),
+            pid: Some(pid),
+            detail: String::new(),
+            remedy: String::new(),
+        };
+        // Two processes of one tool read as singular.
+        let one = [c("battery", 1), c("battery", 2)];
+        assert_eq!(agree(&one, "controls", "control"), "controls");
+        let two = [c("battery", 1), c("batt", 2)];
+        assert_eq!(agree(&two, "controls", "control"), "control");
     }
 
     #[test]

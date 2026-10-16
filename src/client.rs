@@ -172,8 +172,10 @@ pub fn render_status(report: &StatusReport) -> String {
     if !report.conflicts.is_empty() {
         let _ = writeln!(
             out,
-            "    Paused: {} also control charging. Run `berry doctor` to remove them.",
-            conflicts::summarize(&report.conflicts)
+            "    Paused: {} also {} charging. Run `berry doctor` to remove {}.",
+            conflicts::summarize(&report.conflicts),
+            conflicts::agree(&report.conflicts, "controls", "control"),
+            conflicts::agree(&report.conflicts, "it", "them"),
         );
     } else if charging.charging_allowed.is_none() && report.mode == ChargeControlMode::Unsupported {
         out.push_str(

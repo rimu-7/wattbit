@@ -79,7 +79,7 @@ fn conflicts_explain_the_pause() {
     report.conflicts = vec![conflict(7125), conflict(7126)];
     let text = render_status(&report);
     assert!(text.contains(
-        "    Paused: batt (pids 7125, 7126) also control charging. Run `berry doctor` to remove them.\n"
+        "    Paused: batt (pids 7125, 7126) also controls charging. Run `berry doctor` to remove it.\n"
     ));
 }
 

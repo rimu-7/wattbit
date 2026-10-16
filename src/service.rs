@@ -220,9 +220,11 @@ pub fn install() -> anyhow::Result<String> {
     let others = conflicts::running();
     if !others.is_empty() {
         summary.push_str(&format!(
-            "\n\nWarning: {} also control charging, so berry stays paused until they are \
+            "\n\nWarning: {} also {} charging, so berry stays paused until {} \
              removed. Run `berry doctor` for the exact removal commands.",
-            conflicts::summarize(&others)
+            conflicts::summarize(&others),
+            conflicts::agree(&others, "controls", "control"),
+            conflicts::agree(&others, "it is", "they are"),
         ));
     }
     Ok(summary)

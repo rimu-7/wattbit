@@ -297,7 +297,10 @@ impl Controller {
             if found.is_empty() {
                 log!("no other charge limiter is running; resuming hardware control");
             } else {
-                log!("pausing hardware control: {after} also control charging");
+                log!(
+                    "pausing hardware control: {after} also {} charging",
+                    conflicts::agree(&found, "controls", "control")
+                );
             }
         }
         st.conflicts = found;
@@ -704,8 +707,9 @@ impl Controller {
         if !st.conflicts.is_empty() {
             return Ok(Reply::Ack {
                 message: format!(
-                    "Charge limit disabled. Note: {} still control charging.",
-                    conflicts::summarize(&st.conflicts)
+                    "Charge limit disabled. Note: {} still {} charging.",
+                    conflicts::summarize(&st.conflicts),
+                    conflicts::agree(&st.conflicts, "controls", "control")
                 ),
             });
         }
