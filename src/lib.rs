@@ -10,6 +10,7 @@ compile_error!("berry only supports macOS");
 pub mod battery;
 pub mod capabilities;
 pub mod config;
+pub mod daemon;
 pub mod ffi;
 pub mod hardware;
 pub mod policy;
