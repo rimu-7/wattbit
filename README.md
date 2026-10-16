@@ -1,224 +1,388 @@
 # berry
 
-Battery charge limiting, power adapter control and battery telemetry for macOS,
-written in Rust against IOKit and the System Management Controller (SMC).
+**Keep your MacBook battery healthy by limiting how far it charges.**
 
-berry has two parts:
+berry stops charging at a limit you choose (for example 80%) and resumes when
+the charge drops a little below it. It also shows detailed battery
+information, can run your Mac from battery while plugged in, and explains
+what your hardware does and doesn't support.
 
-- **`berryd`**: a root daemon (`berry daemon run`) that owns all SMC and IOKit
-  access, runs the charge-limit state machine and persists configuration.
-- **`berry`**: an unprivileged CLI that talks to the daemon over a Unix domain
-  socket at `/var/run/berry.sock`.
+berry is honest about hardware: if your Mac can't do something, berry says
+so and tells you why. It never pretends a setting worked.
 
-berry never pretends. Each control is enabled only after the SMC keys it needs
-have been found and, when running as root, write-tested. Anything the
-hardware cannot do is reported as `unsupported`, along with the reason.
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Will it work on my Mac?](#will-it-work-on-my-mac)
+- [Setting a charge limit](#setting-a-charge-limit)
+- [Commands](#commands)
+- [Reading `berry doctor`](#reading-berry-doctor)
+- [Reading `berry status`](#reading-berry-status)
+- [Troubleshooting](#troubleshooting)
+- [Updating and uninstalling](#updating-and-uninstalling)
+- [How it works](#how-it-works)
+- [For developers](#for-developers)
 
-## Hardware support
+## Requirements
 
-Charge limiting depends on undocumented SMC keys whose names change between
-firmware generations. berry probes for each of them at startup:
+- A Mac laptop running macOS, with Apple Silicon or an Intel processor
+- An administrator account (installing needs `sudo`)
+- The Rust toolchain, to build berry: install it from [rustup.rs](https://rustup.rs)
 
-| Feature | SMC keys (in order of preference) | Notes |
+## Quick start
+
+```sh
+# 1. Build
+cargo build --release
+
+# 2. Install the background service. This also puts `berry` on your PATH.
+sudo ./target/release/berry install-service
+
+# 3. Check your Mac for problems and fix anything marked ✘
+berry doctor
+
+# 4. Set a limit
+sudo berry limit 80
+
+# 5. Check that it's working
+berry status
+```
+
+If step 4 fails, read [Setting a charge limit](#setting-a-charge-limit). The
+most common causes are another battery app still running, or a Mac whose
+firmware doesn't allow charge control.
+
+## Will it work on my Mac?
+
+Limiting the charge needs special hardware controls (keys in the System
+Management Controller, or SMC). Apple doesn't document them and changes them
+between macOS versions. berry looks for every known key at startup and only
+uses what it finds and has successfully tested.
+
+| What berry can do | Needs SMC key | When it's missing |
 | --- | --- | --- |
-| Charge inhibit (`native` mode) | `CHTE`, then `CH0B` + `CH0C` | berry runs the hysteresis loop |
-| Firmware limit | `BCLM` | Intel firmware enforces the upper limit itself |
-| Power adapter control | `CHIE`, then `CH0I` | Mac runs from battery while plugged in |
-| MagSafe LED | `ACLC` | Optional status colour while a limit is set |
+| Stop charging at your limit | `CHTE`, or `CH0B` + `CH0C` | Use one of the options below |
+| Firmware charge limit (Intel Macs) | `BCLM` | — |
+| Run from battery while plugged in | `CHIE` or `CH0I` | `berry adapter` is unavailable |
+| Change the MagSafe light colour | `ACLC` | `magsafe-led` is unavailable |
 
-**macOS 27:** on the firmware tested so far (macOS 27.0.1, Mac16,12), `CHTE`,
-`CH0B`, `CH0C` and `BCLM` are all absent and only `CHIE` responds. This
-matches [community reports](https://github.com/actuallymentor/battery/pull/478).
-There, berry reports charge control as `unsupported` and does not fake it. Two
-options remain:
+**macOS 27:** the charge-stopping keys have been removed. On macOS 27.0.1
+(MacBook Air, Mac16,12) only `CHIE` is left. Other tools see
+[the same thing](https://github.com/actuallymentor/battery/pull/478). On
+these Macs, berry can't stop charging directly, so `berry status` shows
+**Charge control mode: unsupported**. See
+[Setting a charge limit](#setting-a-charge-limit) for the alternatives.
 
-- **macOS 26.4 and later include a built-in charge limit** in System Settings →
-  Battery, which is the most robust choice where it is available.
-- **Adapter fallback** (opt-in): `sudo berry set adapter-fallback on` lets
-  berry hold the limit by bypassing the adapter, so the Mac runs from its
-  battery between the upper and lower limits. That costs battery cycles, so
-  it is off by default and reported as its own mode (`adapter fallback`).
+To see exactly what your Mac supports, run `berry doctor`.
 
-Run `berry doctor` to see exactly what your Mac supports.
+## Setting a charge limit
 
-## Installation
+### Step 1: Remove other battery apps
 
-Requires macOS and a Rust toolchain (edition 2021).
+Only one battery app can control charging at a time. Run `berry doctor`. If
+it lists anything under **Conflict**, remove it with the command doctor
+prints. berry recognizes AlDente, batt, Battery Toolkit and the `battery`
+command-line tool. While one of them is running, berry pauses and changes
+nothing.
+
+### Step 2: Set the limit
+
+```sh
+sudo berry limit 80               # stop at 80%, resume below 75%
+sudo berry limit 85 --lower 60    # stop at 85%, resume below 60%
+sudo berry limit disable          # remove the limit and charge normally
+```
+
+The upper limit can be 50–100%. By default, the lower limit is 5% below it.
+
+### If your Mac can't stop charging (macOS 27)
+
+If `berry limit` replies *"this Mac exposes no usable charge-inhibit
+control"*, pick **one** of these:
+
+- **Apple's built-in limit (recommended).** macOS 26.4 and later have one in
+  **System Settings → Battery → Charging**. It's reliable and needs nothing
+  else. Leave berry's limit disabled.
+- **berry's adapter fallback.** berry holds the limit by switching the
+  charger off and on:
+
+  ```sh
+  sudo berry set adapter-fallback on
+  sudo berry limit 80
+  ```
+
+  At 80% berry switches off charger input, and your Mac runs from its
+  battery even though it's plugged in. Below 75% berry switches the charger
+  back on. This works, but the battery keeps cycling between 75% and 80%,
+  which adds wear. That's why the fallback is off by default.
+
+### Step 3: Confirm it's working
+
+Run `berry status`. You should see:
+
+- no line starting with **Paused**
+- **Charge control mode** showing anything other than `unsupported`
+- **Upper limit** and **Lower limit** showing your numbers
+
+## Commands
+
+| Command | What it does | Needs `sudo` |
+| --- | --- | --- |
+| `berry status` | Shows charging, battery, settings and hardware support | no |
+| `berry status --json` | The same, as JSON for scripts | no |
+| `berry doctor` | Checks your Mac, the service and the settings for problems | no |
+| `berry limit [PERCENT] [--lower PERCENT]` | Sets the charge limit (default 80) | yes |
+| `berry limit disable` | Removes the limit | yes |
+| `berry adapter disable` | Runs the Mac from battery while plugged in | yes |
+| `berry adapter enable` | Uses the charger again | yes |
+| `berry set OPTION on\|off` | Changes a setting (see below) | yes |
+| `berry install-service` | Installs or updates the background service | yes |
+| `berry uninstall-service [--purge]` | Removes it (`--purge` also deletes settings) | yes |
+
+### Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `prevent-idle-sleep` | on | Keeps the Mac awake while it charges toward the limit, so berry can stop it on time |
+| `disable-charging-before-sleep` | on | Stops charging before the Mac sleeps, because berry can't watch the battery during sleep |
+| `prevent-system-sleep` | off | Stronger version of `prevent-idle-sleep` while charging toward the limit, using the same mechanism as `caffeinate -s`. macOS only applies it on AC power |
+| `prevent-sleep-adapter-disabled` | off | Keeps the Mac awake while the charger is switched off |
+| `allow-non-root` | on | Lets any user run `berry status` and `berry doctor` |
+| `magsafe-led` | off | MagSafe light shows green while the limit holds and orange while charging |
+| `adapter-fallback` | off | Holds the limit by switching the charger off (see [above](#if-your-mac-cant-stop-charging-macos-27)) |
+
+Example: `sudo berry set magsafe-led on`
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Error (the message explains it) |
+| `2` | Invalid command or value |
+| `3` | Your Mac's hardware doesn't support this |
+| `4` | Needs `sudo` |
+| `5` | Another battery app is in control; remove it first |
+
+## Reading `berry doctor`
+
+Each line starts with a symbol:
+
+| Symbol | Meaning |
+| --- | --- |
+| ✔ | Working |
+| • | Information only, nothing to do |
+| ! | Warning: worth knowing, but not broken |
+| ✘ | Problem: fix this |
+
+Common lines and what to do about them:
+
+| You see | What it means | What to do |
+| --- | --- | --- |
+| `✘ Conflict: <app>: running` | Another battery app is controlling the hardware, so berry is paused | Run the removal command printed below it |
+| `! Conflict: <app>: installed but not running` | It's installed and could start again | Remove it if you no longer use it |
+| `✘ Daemon socket: nothing is listening` | The background service isn't running | `sudo ./target/release/berry install-service` |
+| `! Charge inhibit: unsupported` | Your firmware can't stop charging directly | See [If your Mac can't stop charging](#if-your-mac-cant-stop-charging-macos-27) |
+| `! Firmware limit (BCLM): unsupported` | Normal on Apple Silicon (it's an Intel feature) | Nothing |
+| `! MagSafe LED control: unverified` | The key exists, but berry skipped the write test because something other than macOS was controlling the light. berry never changes the light just to test it | Nothing. It's still usable, and is tested on the next service start if macOS controls the light then |
+| `• SMC key …: absent` | That key doesn't exist on your Mac | Nothing |
+| `• Config file: … does not exist` | You haven't changed any settings yet | Nothing |
+
+## Reading `berry status`
+
+```text
+Charging status:
+  Allow charging: ✘ (refreshes can take up to 2 minutes)
+    Your Mac will not charge, because your current charge is above the limit.
+  Use power adapter: ✔
+
+Battery status:
+  Current charge: 80%
+  State: not charging
+  Full capacity: 8648 mAh / 8694 mAh (99%)
+  Charge rate: +0.0 W
+  Voltage: 11.89 V
+
+Battery configuration:
+  Upper limit: 80%
+  Lower limit: 75%
+  ...
+
+Hardware compatibility:
+  Charge control mode: native
+  ...
+```
+
+- **Allow charging**: ✔ if the battery may charge now, ✘ if berry is holding
+  it at the limit, `unsupported` if berry can't control charging on this Mac.
+- **Use power adapter**: ✔ if the Mac uses the charger, ✘ if it runs from
+  battery.
+- **Paused: …**: another battery app is running; see
+  [Step 1](#step-1-remove-other-battery-apps).
+- **Full capacity**: how much the battery holds now, compared with when it
+  was new. The percentage is the battery's health.
+- **Charge rate**: positive while charging, negative while running from
+  battery.
+- **Charge control mode**: how the limit is enforced. `native` means the
+  hardware stops charging; `firmware limit (BCLM)` is the Intel equivalent;
+  `adapter fallback` means berry switches the charger off; `unsupported`
+  means no limit is possible.
+- **✔ (unverified)**: the hardware control exists, but its write test was
+  skipped.
+
+## Troubleshooting
+
+**`zsh: command not found: berry`**
+Run `sudo ./target/release/berry install-service` again from the project
+folder. It creates `/usr/local/bin/berry`. If you see that path in a warning
+instead, another file is already using the name, and you can run berry as
+`/Library/PrivilegedHelperTools/berryd`.
+
+**`the berry daemon is not running`**
+Install the service: `sudo ./target/release/berry install-service`. If it is
+installed, check the log: `tail -50 /var/log/berry.log`.
+
+**`requires root; re-run with sudo`** (exit code 4)
+Commands that change anything need `sudo`, for example `sudo berry limit 80`.
+
+**`other charge limiters are controlling the same hardware`** (exit code 5)
+Remove the apps it lists, using the commands it prints. berry resumes on its
+own once they're gone.
+
+**`this Mac exposes no usable charge-inhibit control`** (exit code 3)
+Your firmware can't stop charging directly. See
+[If your Mac can't stop charging](#if-your-mac-cant-stop-charging-macos-27).
+
+**The battery went past my limit**
+Check `berry status` for a **Paused** line or a **Last error** line. Also
+check whether the Mac was asleep: berry can't act during sleep, which is why
+`disable-charging-before-sleep` is on by default.
+
+**Watching what berry does**
+`tail -f /var/log/berry.log` shows every decision as it happens, for
+example: limit reached, charging stopped, charger switched back on.
+
+## Updating and uninstalling
+
+**Update:** pull the new code, then run:
 
 ```sh
 cargo build --release
 sudo ./target/release/berry install-service
-berry doctor     # check for problems first
-berry status
 ```
 
-`install-service`:
+This stops the old service, replaces it and starts the new one. Your
+settings are kept.
 
-- copies the binary to `/Library/PrivilegedHelperTools/berryd`, which is owned
-  by root, so the daemon never runs a user-writable file;
-- links `/usr/local/bin/berry` to it, so `berry` is on your `PATH`;
-- writes `/Library/LaunchDaemons/com.berry.daemon.plist` and loads it.
+**Uninstall:**
 
-Logs go to `/var/log/berry.log`.
+```sh
+sudo berry uninstall-service           # keeps your settings in /etc/berry.json
+sudo berry uninstall-service --purge   # also deletes them
+```
 
-To update after pulling new code, rebuild and run
-`sudo ./target/release/berry install-service` again. It stops the old daemon,
-replaces the binary and starts the new one.
+Normal charging is restored immediately.
 
-To remove berry, run `sudo berry uninstall-service`. That restores factory
-charging and removes the daemon, plist and `PATH` link. `/etc/berry.json` is
-kept; add `--purge` to delete it too.
+### What gets installed
 
-## Other charge limiters
+| Path | What it is |
+| --- | --- |
+| `/Library/PrivilegedHelperTools/berryd` | The berry program, owned by root |
+| `/usr/local/bin/berry` | Link to it, so you can type `berry` |
+| `/Library/LaunchDaemons/com.berry.daemon.plist` | Starts berry's background service at boot |
+| `/etc/berry.json` | Your settings (created when you first change one) |
+| `/var/log/berry.log` | Log |
+| `/var/run/berry.sock` | How the `berry` command talks to the service |
 
-batt, AlDente, actuallymentor's `battery` and Battery Toolkit write the same
-SMC keys as berry. If two of these tools run at once, they override each
-other and the charging state oscillates.
+## How it works
 
-berry checks for them every time it evaluates the policy, including from the
-root daemon, which can see every process. While one is running:
+berry has two parts. The **service** (`berryd`) runs in the background as
+root and is the only part that touches the hardware. The **`berry`
+command** talks to the service and doesn't need special rights to read
+status.
 
-- berry **pauses**: it reads hardware state but writes nothing;
-- `berry status` names the tools and their process IDs;
-- `berry limit` and `berry adapter` are refused with exit status `5`, along
-  with the exact commands to stop and remove each tool;
-- `berry doctor` also lists tools that are installed but not running.
+### The limit
 
-Remove the other tools, and berry resumes control automatically on its next
-evaluation. When it exits while another tool is present, berry undoes only
-the changes it made itself.
+With an upper limit *U* and a lower limit *L*:
 
-## Getting a working limit on macOS 27
-
-1. Run `berry doctor` and remove every tool listed under **Conflict**.
-2. If doctor reports **Charge inhibit: unsupported** (as on macOS 27
-   firmware), choose one of:
-   - Apple's built-in limit: System Settings → Battery → Charging. Leave
-     berry's limit disabled.
-   - berry's adapter fallback:
-
-     ```sh
-     sudo berry set adapter-fallback on
-     sudo berry limit 80
-     ```
-
-     The Mac runs from its battery between 75% and 80% while plugged in.
-3. Run `berry status` and confirm that **Charge control mode** is not
-   `unsupported` and that no **Paused** line appears.
-
-## Usage
-
-| Command | Description | Privileges |
+| State | When | Charging |
 | --- | --- | --- |
-| `berry status [--json]` | Charging, battery, configuration and hardware dashboard | user* |
-| `berry limit [PERCENT] [--lower PERCENT]` | Stop charging at `PERCENT` (50–100, default 80); resume below `--lower` (default `PERCENT − 5`) | root |
-| `berry limit disable` | Remove the limit and restore factory charging | root |
-| `berry adapter enable\|disable` | Use or bypass the power adapter | root |
-| `berry set OPTION on\|off` | Change a setting (see below) | root |
-| `berry doctor` | Diagnose architecture, SMC keys, daemon, config and service | user |
-| `berry daemon run [--config PATH] [--read-only]` | Run the daemon in the foreground (launchd uses this) | root |
-| `berry install-service` / `uninstall-service [--purge]` | Manage the LaunchDaemon | root |
+| `ChargingPermitted` | charge is below *L*, or between the limits while charging up | allowed |
+| `ChargingSuppressed` | charge has reached *U* | stopped |
+| `WaitingToResumeCharging` | charge is between the limits after reaching *U* | stopped |
 
-\* Unless `allow-non-root` is off. Every command accepts `--socket PATH`.
+The gap between the limits stops charging from switching on and off at every
+1% change. macOS notifies berry whenever the charge level changes or the
+charger is plugged in, and berry reacts immediately. It also re-checks every
+30 seconds as a backup. Every hardware change is read back to confirm it
+took effect.
 
-Settings for `berry set`:
+### Safety
 
-| Option | Default | Effect |
-| --- | --- | --- |
-| `prevent-idle-sleep` | on | Hold an idle-sleep assertion while charging toward the limit, so the daemon can stop at the limit |
-| `disable-charging-before-sleep` | on | Inhibit charging before system sleep while a limit is set, because the daemon cannot run during sleep |
-| `prevent-system-sleep` | off | Hold a system-sleep assertion while charging toward the limit |
-| `prevent-sleep-adapter-disabled` | off | Hold an idle-sleep assertion while the adapter is bypassed |
-| `allow-non-root` | on | Let non-root users run `status` and `doctor` |
-| `magsafe-led` | off | Show green while the limit holds and orange while charging |
-| `adapter-fallback` | off | Hold the limit by bypassing the adapter when no charge-inhibit key exists |
+- **Normal charging returns when berry stops.** Stopping or uninstalling the
+  service switches charging and the charger back on. If another battery app
+  is present, berry undoes only its own changes.
+- **The charger always comes back at 10%.** If the charger is switched off
+  and the battery drops to 10%, berry switches it back on, and it refuses to
+  switch it off at or below 10%. The adapter fallback never holds the charger
+  off during sleep.
+- **No guessing.** berry only writes to a hardware key while it holds one of
+  two known values, and it tests write access by writing back the value it
+  just read, which changes nothing.
+- **No hanging.** Every hardware call and connection has a time limit.
+- **Settings can't be corrupted.** `/etc/berry.json` is written to a
+  temporary file and swapped in at once. Invalid values are rejected when
+  it's loaded.
+- **No fighting.** While another battery app runs, berry pauses (see
+  [Step 1](#step-1-remove-other-battery-apps)).
 
-Exit status: `0` success, `1` error, `2` invalid usage, `3` not supported by
-this Mac's hardware, `4` insufficient privileges, `5` another charge limiter
-is running.
+### Security
 
-## How the limit works
+Every request to the service is checked with the caller's user ID. Only root
+(`sudo`) can change anything. Other users can read status and run doctor,
+and only while `allow-non-root` is on; turning it off also restricts the
+socket to root. The service only runs a root-owned copy of the program, never
+one in a user-writable folder.
 
-With an upper limit *U* and a lower limit *L* (default *L* = max(0, *U* − 5)):
+## For developers
 
-| State | Condition | Charging |
-| --- | --- | --- |
-| `ChargingSuppressed` | charge ≥ *U* | held off |
-| `WaitingToResumeCharging` | *L* ≤ charge < *U*, after being suppressed | held off |
-| `ChargingPermitted` | charge < *L*, or below *U* while already charging | allowed |
-
-The daemon subscribes to IOPowerSources change notifications. It re-evaluates
-as the charge level changes and when the adapter is plugged in or removed,
-so charging stops at the limit rather than overshooting it. It also
-re-evaluates every 30 seconds as a fallback, on wake, and after every change
-to its settings. Each SMC write is read back to confirm it took effect.
-
-## Safety
-
-- **Fail-safe exit.** On `SIGTERM`/`SIGINT` (including `uninstall-service`
-  and system shutdown) the daemon re-enables charging and the adapter, returns
-  the LED to the system and releases its power assertions. On start it
-  reconciles the hardware with the saved configuration.
-- **Adapter safety floor.** A bypassed adapter is re-enabled automatically at
-  10% charge, and `berry adapter disable` is refused at or below it. The
-  adapter-fallback bypass is never held across sleep, because the daemon
-  cannot watch the battery while the Mac sleeps.
-- **Only known states are written.** A control is used only while its keys
-  hold one of its two known byte patterns. Write access is tested by writing
-  back the value just read, which doesn't change hardware state.
-- **Bounded I/O.** Every hardware call has a 5 s timeout and every socket read
-  and write has a timeout. Messages are capped at 256 KiB, and at most 16
-  clients are served at once.
-- **Atomic configuration.** `/etc/berry.json` is written to a temporary file,
-  fsynced and renamed into place. Out-of-range thresholds are rejected when
-  the file is loaded.
-
-## Security model
-
-The socket is world-connectable (`0666`) while `allow-non-root` is on and
-owner-only (`0600`) otherwise. Access is enforced per request with
-`getpeereid(2)`: root may do anything; other users may only make read calls
-(`status`, `doctor`), and only while `allow-non-root` is on. To change
-anything, use `sudo`.
-
-## Architecture
+### Layout
 
 ```text
 src/
 ├── main.rs            entry point and command dispatch
-├── cli.rs             clap definitions and argument validation
-├── client.rs          socket client and status dashboard renderer
-├── protocol.rs        JSON-RPC 2.0 messages, error codes, framing
+├── cli.rs             command-line definitions and validation
+├── client.rs          socket client and the status display
+├── protocol.rs        JSON-RPC 2.0 messages and error codes
 ├── daemon/
-│   ├── mod.rs         socket server, getpeereid authorization, event loop
+│   ├── mod.rs         socket server, caller authorization, event loop
 │   └── controller.rs  policy evaluation and hardware reconciliation
-├── policy.rs          thresholds and the hysteresis state machine
-├── config.rs          atomic JSON configuration store
-├── capabilities.rs    SMC key probing and the feature matrix
-├── conflicts.rs       detection of other charge-limit tools
-├── hardware.rs        verified charge/adapter/LED/BCLM control
+├── policy.rs          limits and the charging state machine
+├── config.rs          atomic settings file
+├── capabilities.rs    SMC key probing and the feature table
+├── conflicts.rs       detection of other battery apps
+├── hardware.rs        verified charge, adapter, LED and BCLM control
 ├── smc/
-│   ├── mod.rs         AppleSMC user client (IOConnectCallStructMethod)
-│   └── keys.rs        key names and exact byte patterns per control
-├── battery.rs         IOPowerSources + AppleSmartBattery telemetry
-├── power.rs           IOPM assertions, sleep/wake and power-source notifications
+│   ├── mod.rs         AppleSMC driver (IOConnectCallStructMethod)
+│   └── keys.rs        key names and the exact bytes written to each
+├── battery.rs         battery data from IOPowerSources and AppleSmartBattery
+├── power.rs           sleep/wake and power-source notifications, sleep prevention
 ├── doctor.rs          diagnostic checks
-├── service.rs         LaunchDaemon plist, install and uninstall
-└── ffi.rs             IOKit declarations transcribed from the SDK headers
+├── service.rs         LaunchDaemon install and uninstall
+└── ffi.rs             IOKit declarations taken from the macOS SDK headers
 ```
 
-berry uses native frameworks only: IOKit and CoreFoundation through
-`core-foundation` and `mach2`. The one external process is `/bin/launchctl`
-during `install-service`/`uninstall-service`, because macOS has no supported
-C API that lets a command-line tool load a system LaunchDaemon.
+berry uses only native frameworks (IOKit and CoreFoundation). The one
+external program it runs is `/bin/launchctl`, during install and uninstall:
+macOS has no supported C API that lets a command-line tool load a system
+service.
 
-Control values are stored as exact byte patterns rather than numbers. SMC
-integers are little-endian on Apple Silicon (for example `B0AV`) but
-big-endian on Intel, so berry never re-encodes a value it writes.
+Control values are stored as exact bytes rather than numbers, because SMC
+integers are little-endian on Apple Silicon but big-endian on Intel.
 
-### IPC protocol
+### Protocol
 
-One newline-terminated JSON-RPC 2.0 request and one response per connection:
+The `berry` command sends one JSON-RPC 2.0 request per connection to
+`/var/run/berry.sock`, as a single line:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"set_limit","params":{"upper":80,"lower":75}}
@@ -226,20 +390,26 @@ One newline-terminated JSON-RPC 2.0 request and one response per connection:
 ```
 
 Methods: `status`, `doctor`, `set_limit`, `disable_limit`, `set_adapter`,
-`set_option`. Errors use the standard JSON-RPC codes, plus `-32001`
-(unauthorized), `-32002` (unsupported), `-32003` (hardware), `-32004`
-(timeout) and `-32005` (conflict with another charge limiter), with
-`error.data.kind` naming the category.
+`set_option`. Besides the standard JSON-RPC errors, berry uses `-32001`
+(unauthorized), `-32002` (unsupported), `-32003` (hardware failure), `-32004`
+(timeout) and `-32005` (another battery app running). `error.data.kind` names
+the category.
 
-## Development
+### Testing
 
 ```sh
-cargo test                                          # unit, protocol, CLI and end-to-end tests
-cargo test --test hardware -- --ignored --nocapture # read-only probes of this Mac's SMC and battery
+cargo test                                            # all automated tests
+cargo test --test hardware -- --ignored --nocapture   # read-only checks of this Mac
+```
+
+To try changes without installing, run the service in read-only mode. It
+doesn't need root, reads the hardware but never changes it, and is what the
+end-to-end tests use:
+
+```sh
 cargo run -- daemon run --read-only --socket /tmp/berry.sock --config /tmp/berry.json
 cargo run -- status --socket /tmp/berry.sock
 ```
 
-`--read-only` runs the daemon without root. It reads hardware but never writes
-to it and holds no power assertions, which keeps development and the
-end-to-end tests from changing the machine's charging state.
+CI runs `cargo fmt --check`, `cargo clippy -- -D warnings`, the tests and a
+release build on macOS.
