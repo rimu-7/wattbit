@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::battery::BatteryTelemetry;
 use crate::capabilities::{Capabilities, ChargeControlMode};
 use crate::config::{Config, ConfigOption};
+use crate::conflicts::Conflict;
 use crate::policy::ChargeState;
 
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -148,6 +149,8 @@ pub enum ErrorKind {
     /// A hardware operation failed.
     Hardware,
     Timeout,
+    /// Another charge-limit tool is controlling the same hardware.
+    Conflict,
 }
 
 impl ErrorKind {
@@ -164,6 +167,7 @@ impl ErrorKind {
             ErrorKind::Unsupported => -32002,
             ErrorKind::Hardware => -32003,
             ErrorKind::Timeout => -32004,
+            ErrorKind::Conflict => -32005,
         }
     }
 }
@@ -278,6 +282,10 @@ pub struct StatusReport {
     pub config_warning: Option<String>,
     pub mode: ChargeControlMode,
     pub capabilities: Capabilities,
+    /// Other charge limiters running; berry pauses hardware writes while
+    /// any are present.
+    #[serde(default)]
+    pub conflicts: Vec<Conflict>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,4 +299,6 @@ pub struct DaemonDiagnostics {
     pub mode: ChargeControlMode,
     pub capabilities: Capabilities,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub conflicts: Vec<Conflict>,
 }

@@ -154,7 +154,16 @@ fn unsupported_or_failed_writes_are_reported_not_faked() {
         serde_json::from_slice(&daemon.berry(&["status", "--json"]).stdout).unwrap();
     let native = caps["capabilities"]["charge_inhibit"]["status"] != "unsupported"
         || caps["capabilities"]["firmware_limit"]["status"] != "unsupported";
-    if native {
+    let conflicted = caps["conflicts"]
+        .as_array()
+        .is_some_and(|list| !list.is_empty());
+    if native && conflicted {
+        // Another charge limiter is running: berry refuses rather than
+        // fights it (exit status 5) and saves nothing.
+        assert_eq!(code, Some(5), "{}", stderr(&output));
+        assert!(stderr(&output).contains("will not fight them"));
+        assert!(!daemon.config().exists());
+    } else if native {
         // The limit is saved, but read-only mode refuses to apply it, and
         // that refusal must surface as an error.
         assert_eq!(code, Some(1), "{}", stderr(&output));

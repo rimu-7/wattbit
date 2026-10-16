@@ -7,6 +7,19 @@
 
 use berry::battery;
 use berry::capabilities;
+use berry::conflicts;
+
+#[test]
+#[ignore = "inspects this machine's processes"]
+fn report_other_charge_limiters() {
+    let running = conflicts::running();
+    for c in &running {
+        println!("running   {} pid {:?}: {}", c.tool, c.pid, c.detail);
+    }
+    for c in conflicts::installed(&running) {
+        println!("installed {}: {}", c.tool, c.detail);
+    }
+}
 use berry::smc::{keys, Smc, SmcError};
 
 #[test]

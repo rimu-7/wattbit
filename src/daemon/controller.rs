@@ -10,6 +10,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::battery::BatteryTelemetry;
 use crate::capabilities::{Capabilities, ChargeControlMode};
 use crate::config::{Config, ConfigOption, ConfigStore};
+use crate::conflicts::{self, Conflict};
 use crate::hardware::{Hardware, HardwareError};
 use crate::policy::{adapter_must_be_restored, ChargeLimiter, Thresholds, ADAPTER_SAFETY_FLOOR};
 use crate::power::{AssertionKind, PowerAssertion, PowerEvent};
@@ -23,6 +24,9 @@ pub const HARDWARE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Status requests reuse telemetry younger than this instead of re-reading.
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Power-source notifications closer together than this are coalesced.
+const EVENT_DEBOUNCE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
@@ -82,6 +86,12 @@ struct State {
     assertions: Assertions,
     /// LED mode berry last wrote; `None` while the system owns the LED.
     led: Option<LedMode>,
+    /// Other charge limiters seen in the latest scan.
+    conflicts: Vec<Conflict>,
+    /// berry itself inhibited charging, as opposed to another tool.
+    owns_inhibit: bool,
+    /// berry itself bypassed the adapter, as opposed to another tool.
+    owns_adapter_cut: bool,
 }
 
 #[derive(Debug)]
@@ -123,6 +133,9 @@ impl Controller {
                 asleep: false,
                 assertions: Assertions::default(),
                 led: None,
+                conflicts: Vec::new(),
+                owns_inhibit: false,
+                owns_adapter_cut: false,
             }),
         }
     }
@@ -160,9 +173,15 @@ impl Controller {
         self.hw(f).await
     }
 
-    /// Drives charge inhibit to `inhibit`. Returns the resulting hardware
-    /// state, or `None` if it could not be read.
-    async fn ensure_charge_inhibit(&self, inhibit: bool, errors: &mut Vec<String>) -> Option<bool> {
+    /// Drives charge inhibit to `inhibit` (only reads when `may_write` is
+    /// false). Returns the resulting hardware state, or `None` if it could
+    /// not be read.
+    async fn ensure_charge_inhibit(
+        &self,
+        inhibit: bool,
+        may_write: bool,
+        errors: &mut Vec<String>,
+    ) -> Option<bool> {
         let current = match self.hw(|hw| hw.charging_inhibited()).await {
             Ok(current) => current,
             Err(e) => {
@@ -170,7 +189,7 @@ impl Controller {
                 return None;
             }
         };
-        if current == inhibit {
+        if current == inhibit || !may_write {
             return Some(current);
         }
         match self
@@ -190,9 +209,15 @@ impl Controller {
         }
     }
 
-    /// Drives the adapter to `enabled`. Returns the resulting hardware
-    /// state, or `None` if it could not be read.
-    async fn ensure_adapter(&self, enabled: bool, errors: &mut Vec<String>) -> Option<bool> {
+    /// Drives the adapter to `enabled` (only reads when `may_write` is
+    /// false). Returns the resulting hardware state, or `None` if it could
+    /// not be read.
+    async fn ensure_adapter(
+        &self,
+        enabled: bool,
+        may_write: bool,
+        errors: &mut Vec<String>,
+    ) -> Option<bool> {
         let current = match self.hw(|hw| hw.adapter_disabled()).await {
             Ok(disabled) => !disabled,
             Err(e) => {
@@ -200,7 +225,7 @@ impl Controller {
                 return None;
             }
         };
-        if current == enabled {
+        if current == enabled || !may_write {
             return Some(current);
         }
         match self
@@ -221,7 +246,12 @@ impl Controller {
         }
     }
 
-    async fn ensure_firmware_limit(&self, percent: u8, errors: &mut Vec<String>) -> Option<u8> {
+    async fn ensure_firmware_limit(
+        &self,
+        percent: u8,
+        may_write: bool,
+        errors: &mut Vec<String>,
+    ) -> Option<u8> {
         let current = match self.hw(|hw| hw.firmware_limit()).await {
             Ok(current) => current,
             Err(e) => {
@@ -229,7 +259,7 @@ impl Controller {
                 return None;
             }
         };
-        if current == percent {
+        if current == percent || !may_write {
             return Some(current);
         }
         match self
@@ -247,6 +277,57 @@ impl Controller {
         }
     }
 
+    /// Re-scans for other charge limiters, logging when the set changes.
+    async fn refresh_conflicts(&self, st: &mut State) {
+        let scan = tokio::time::timeout(
+            HARDWARE_TIMEOUT,
+            tokio::task::spawn_blocking(conflicts::running),
+        )
+        .await;
+        let found = match scan {
+            Ok(Ok(found)) => found,
+            _ => {
+                log!("scanning for other charge limiters failed; keeping the previous result");
+                return;
+            }
+        };
+        let before = conflicts::summarize(&st.conflicts);
+        let after = conflicts::summarize(&found);
+        if before != after {
+            if found.is_empty() {
+                log!("no other charge limiter is running; resuming hardware control");
+            } else {
+                log!("pausing hardware control: {after} also control charging");
+            }
+        }
+        st.conflicts = found;
+    }
+
+    fn conflict_error(st: &State) -> Result<(), RpcError> {
+        if st.conflicts.is_empty() {
+            return Ok(());
+        }
+        let remedies: Vec<String> = {
+            let mut seen = Vec::new();
+            for c in &st.conflicts {
+                let line = format!("  {}: {}", c.tool, c.remedy);
+                if !seen.contains(&line) {
+                    seen.push(line);
+                }
+            }
+            seen
+        };
+        Err(RpcError::new(
+            ErrorKind::Conflict,
+            format!(
+                "other charge limiters are controlling the same hardware: {}. berry will not \
+                 fight them. Stop and remove them first:\n{}",
+                conflicts::summarize(&st.conflicts),
+                remedies.join("\n")
+            ),
+        ))
+    }
+
     pub async fn reconcile(&self) {
         let mut state = self.state.lock().await;
         self.reconcile_locked(&mut state).await;
@@ -254,6 +335,12 @@ impl Controller {
 
     async fn reconcile_locked(&self, st: &mut State) {
         let mut errors = Vec::new();
+
+        // While another charge limiter runs, berry only observes; the
+        // status report carries the conflicts.
+        self.refresh_conflicts(st).await;
+        let paused = !st.conflicts.is_empty();
+        let may_write = !paused;
 
         match self.hw(|hw| Ok(hw.battery())).await {
             Ok(Ok(battery)) => {
@@ -303,14 +390,20 @@ impl Controller {
             ChargeControlMode::Native => {
                 let hold_for_sleep = st.asleep && st.config.disable_charging_before_sleep;
                 let inhibit = limit_active && (!policy_allows || hold_for_sleep);
-                st.charging_allowed = self
-                    .ensure_charge_inhibit(inhibit, &mut errors)
-                    .await
-                    .map(|inhibited| !inhibited);
+                let state = self
+                    .ensure_charge_inhibit(inhibit, may_write, &mut errors)
+                    .await;
+                if may_write {
+                    st.owns_inhibit = inhibit && state == Some(true);
+                }
+                st.charging_allowed = state.map(|inhibited| !inhibited);
             }
             ChargeControlMode::FirmwareLimit => {
                 let target = st.config.charge_limit.map_or(BCLM_MAX, Thresholds::upper);
-                if let Some(limit) = self.ensure_firmware_limit(target, &mut errors).await {
+                if let Some(limit) = self
+                    .ensure_firmware_limit(target, may_write, &mut errors)
+                    .await
+                {
                     st.charging_allowed = charge.map(|c| c < limit);
                 }
             }
@@ -337,7 +430,12 @@ impl Controller {
             if charge.is_some_and(adapter_must_be_restored) {
                 want_enabled = true;
             }
-            st.adapter_enabled = self.ensure_adapter(want_enabled, &mut errors).await;
+            st.adapter_enabled = self
+                .ensure_adapter(want_enabled, may_write, &mut errors)
+                .await;
+            if may_write {
+                st.owns_adapter_cut = !want_enabled && st.adapter_enabled == Some(false);
+            }
             match mode {
                 ChargeControlMode::AdapterFallback => st.charging_allowed = st.adapter_enabled,
                 ChargeControlMode::Unsupported if st.adapter_enabled == Some(false) => {
@@ -349,7 +447,7 @@ impl Controller {
             st.adapter_enabled = None;
         }
 
-        let assertions_allowed = !self.read_only;
+        let assertions_allowed = !self.read_only && !paused;
         let charging_toward_limit =
             limit_active && policy_allows && on_ac && mode != ChargeControlMode::Unsupported;
         sync_assertion(
@@ -380,7 +478,7 @@ impl Controller {
             &mut errors,
         );
 
-        if self.caps.magsafe_led.is_usable() {
+        if self.caps.magsafe_led.is_usable() && may_write {
             let target = (st.config.control_magsafe_led && limit_active && on_ac).then_some(
                 if is_charging {
                     LedMode::Orange
@@ -420,22 +518,32 @@ impl Controller {
                 st.asleep = false;
                 self.reconcile_locked(&mut st).await;
             }
+            PowerEvent::PowerSourceChanged => {
+                if st
+                    .last_refresh
+                    .is_none_or(|t| t.elapsed() >= EVENT_DEBOUNCE)
+                {
+                    self.reconcile_locked(&mut st).await;
+                }
+            }
         }
     }
 
-    /// Restores factory behaviour before the daemon exits.
+    /// Restores factory behaviour before the daemon exits. While another
+    /// charge limiter runs, only state berry itself set is undone.
     pub async fn shutdown(&self) {
         let mut st = self.state.lock().await;
         st.assertions = Assertions::default();
         if self.read_only {
             return;
         }
+        let foreign = !st.conflicts.is_empty();
         let mut errors = Vec::new();
-        if self.caps.charge_inhibit.is_usable() {
-            self.ensure_charge_inhibit(false, &mut errors).await;
+        if self.caps.charge_inhibit.is_usable() && (!foreign || st.owns_inhibit) {
+            self.ensure_charge_inhibit(false, true, &mut errors).await;
         }
-        if self.caps.adapter_control.is_usable() {
-            self.ensure_adapter(true, &mut errors).await;
+        if self.caps.adapter_control.is_usable() && (!foreign || st.owns_adapter_cut) {
+            self.ensure_adapter(true, true, &mut errors).await;
         }
         if st.led.take().is_some() {
             if let Err(e) = self
@@ -445,13 +553,15 @@ impl Controller {
                 errors.push(format!("MagSafe LED: {e}"));
             }
         }
-        if errors.is_empty() {
-            log!("factory charging behaviour restored");
-        } else {
+        if !errors.is_empty() {
             log!(
                 "restoring factory charging behaviour failed: {}",
                 errors.join("; ")
             );
+        } else if foreign {
+            log!("undid berry's own changes; other charge limiters keep control");
+        } else {
+            log!("factory charging behaviour restored");
         }
     }
 
@@ -488,6 +598,7 @@ impl Controller {
             config_warning: st.config_warning.clone(),
             mode: self.caps.charge_control_mode(st.config.adapter_fallback),
             capabilities: self.caps.clone(),
+            conflicts: st.conflicts.clone(),
         }
     }
 
@@ -504,6 +615,7 @@ impl Controller {
             mode: self.caps.charge_control_mode(st.config.adapter_fallback),
             capabilities: self.caps.clone(),
             last_error: st.last_error.clone(),
+            conflicts: st.conflicts.clone(),
         }
     }
 
@@ -558,6 +670,8 @@ impl Controller {
                 self.unsupported_limit_reason(),
             ));
         }
+        self.refresh_conflicts(&mut st).await;
+        Self::conflict_error(&st)?;
         let mut next = st.config.clone();
         next.charge_limit = Some(thresholds);
         self.commit(&mut st, next)?;
@@ -587,6 +701,14 @@ impl Controller {
         self.commit(&mut st, next)?;
         log!("charge limit disabled");
         self.reconcile_locked(&mut st).await;
+        if !st.conflicts.is_empty() {
+            return Ok(Reply::Ack {
+                message: format!(
+                    "Charge limit disabled. Note: {} still control charging.",
+                    conflicts::summarize(&st.conflicts)
+                ),
+            });
+        }
         Self::applied(&st, "disabling the charge limit")?;
         Ok(Reply::Ack {
             message: "Charge limit disabled; factory charging behaviour restored.".into(),
@@ -607,6 +729,8 @@ impl Controller {
             ));
         }
         let mut st = self.state.lock().await;
+        self.refresh_conflicts(&mut st).await;
+        Self::conflict_error(&st)?;
         if !enabled {
             if let Some(charge) = st.battery.as_ref().map(|b| b.charge_percent) {
                 if adapter_must_be_restored(charge) {

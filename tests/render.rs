@@ -2,6 +2,7 @@ use berry::battery::{BatteryTelemetry, PowerSource};
 use berry::capabilities::{Capabilities, ChargeControlMode, HostInfo, Support};
 use berry::client::render_status;
 use berry::config::Config;
+use berry::conflicts::Conflict;
 use berry::policy::{ChargeState, Thresholds};
 use berry::protocol::{ChargingStatus, StatusReport};
 
@@ -62,7 +63,33 @@ fn suppressed_report() -> StatusReport {
         config_warning: None,
         mode: ChargeControlMode::Native,
         capabilities: capabilities(),
+        conflicts: Vec::new(),
     }
+}
+
+#[test]
+fn conflicts_explain_the_pause() {
+    let mut report = suppressed_report();
+    let conflict = |pid| Conflict {
+        tool: "batt".into(),
+        pid: Some(pid),
+        detail: "/usr/local/bin/batt daemon".into(),
+        remedy: "sudo launchctl bootout system/cc.chlc.batt".into(),
+    };
+    report.conflicts = vec![conflict(7125), conflict(7126)];
+    let text = render_status(&report);
+    assert!(text.contains(
+        "    Paused: batt (pids 7125, 7126) also control charging. Run `berry doctor` to remove them.\n"
+    ));
+}
+
+#[test]
+fn unsupported_mode_points_to_doctor() {
+    let mut report = suppressed_report();
+    report.mode = ChargeControlMode::Unsupported;
+    report.charging.charging_allowed = None;
+    let text = render_status(&report);
+    assert!(text.contains("    This Mac has no charge-inhibit SMC key; run `berry doctor`"));
 }
 
 #[test]

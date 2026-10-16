@@ -8,7 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::capabilities::Support;
+use crate::capabilities::{ChargeControlMode, Support};
+use crate::conflicts;
 use crate::policy::ChargeState;
 use crate::protocol::{
     encode_line, Call, Outcome, Reply, Request, Response, RpcError, StatusReport, CLIENT_TIMEOUT,
@@ -167,6 +168,17 @@ pub fn render_status(report: &StatusReport) -> String {
             }
             _ => {}
         }
+    }
+    if !report.conflicts.is_empty() {
+        let _ = writeln!(
+            out,
+            "    Paused: {} also control charging. Run `berry doctor` to remove them.",
+            conflicts::summarize(&report.conflicts)
+        );
+    } else if charging.charging_allowed.is_none() && report.mode == ChargeControlMode::Unsupported {
+        out.push_str(
+            "    This Mac has no charge-inhibit SMC key; run `berry doctor` for alternatives.\n",
+        );
     }
     let _ = writeln!(
         out,

@@ -127,7 +127,17 @@ pub async fn run(options: DaemonOptions) -> anyhow::Result<()> {
 
     let (power_tx, mut power_rx) = tokio::sync::mpsc::unbounded_channel();
     hardware.capabilities_mut().sleep_hooks = match power::spawn_sleep_watcher(power_tx) {
-        Ok(()) => Support::Supported,
+        Ok(features) => {
+            if features.power_source_notifications {
+                log!("power source notifications active: reacting to charge changes immediately");
+            } else {
+                log!(
+                    "power source notifications unavailable; polling every {} s",
+                    EVALUATION_INTERVAL.as_secs()
+                );
+            }
+            Support::Supported
+        }
         Err(e) => {
             log!("sleep hooks unavailable: {e}");
             Support::unsupported(e.to_string())

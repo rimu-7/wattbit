@@ -13,6 +13,8 @@ use berry::{doctor, service};
 const EXIT_UNSUPPORTED: u8 = 3;
 /// Exit status when the caller lacks the required privileges.
 const EXIT_PERMISSION: u8 = 4;
+/// Exit status when another charge limiter controls the hardware.
+const EXIT_CONFLICT: u8 = 5;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -24,6 +26,7 @@ fn main() -> ExitCode {
                 Some(ClientError::Rpc(rpc)) => match rpc.kind() {
                     ErrorKind::Unsupported => EXIT_UNSUPPORTED,
                     ErrorKind::Unauthorized => EXIT_PERMISSION,
+                    ErrorKind::Conflict => EXIT_CONFLICT,
                     _ => 1,
                 },
                 Some(ClientError::PermissionDenied { .. }) => EXIT_PERMISSION,

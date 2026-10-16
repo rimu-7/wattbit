@@ -10,6 +10,7 @@ use crate::battery::{self, BatteryError};
 use crate::capabilities::{self, Capabilities, Support};
 use crate::client::{Client, ClientError};
 use crate::config::ConfigStore;
+use crate::conflicts::{self, Conflict};
 use crate::protocol::{Call, DaemonDiagnostics, Reply};
 use crate::service::{INSTALLED_BINARY, PLIST_PATH};
 use crate::smc::Smc;
@@ -158,6 +159,7 @@ pub async fn run(socket: &Path) -> Vec<Check> {
         }
     };
 
+    conflict_checks(&mut checks, diagnostics.as_deref());
     key_checks(&mut checks, &local, diagnostics.as_deref());
 
     let caps = diagnostics.as_ref().map_or(&local, |d| &d.capabilities);
@@ -220,6 +222,55 @@ pub async fn run(socket: &Path) -> Vec<Check> {
     });
 
     checks
+}
+
+/// Reports other charge limiters, merging this process's scan with the
+/// root daemon's (which can read every process's arguments).
+fn conflict_checks(checks: &mut Vec<Check>, daemon: Option<&DaemonDiagnostics>) {
+    let mut running = conflicts::running();
+    for c in daemon.map_or(&[][..], |d| &d.conflicts) {
+        if !running.iter().any(|r| r.pid == c.pid) {
+            running.push(c.clone());
+        }
+    }
+    let installed = conflicts::installed(&running);
+    if running.is_empty() && installed.is_empty() {
+        checks.push(check(Level::Pass, "Other charge limiters", "none found"));
+        return;
+    }
+    let mut tools: Vec<&str> = Vec::new();
+    for c in &running {
+        if !tools.contains(&c.tool.as_str()) {
+            tools.push(&c.tool);
+        }
+    }
+    for tool in tools {
+        let group: Vec<&Conflict> = running.iter().filter(|c| c.tool == tool).collect();
+        let pids: Vec<String> = group
+            .iter()
+            .filter_map(|c| c.pid.map(|p| p.to_string()))
+            .collect();
+        checks.push(check(
+            Level::Fail,
+            format!("Conflict: {tool}"),
+            format!(
+                "running (pid {}: {}); berry pauses while it runs. Remove it with:\n    {}",
+                pids.join(", "),
+                group[0].detail,
+                group[0].remedy
+            ),
+        ));
+    }
+    for c in installed {
+        checks.push(check(
+            Level::Warn,
+            format!("Conflict: {}", c.tool),
+            format!(
+                "installed but not running ({}). Remove it with:\n    {}",
+                c.detail, c.remedy
+            ),
+        ));
+    }
 }
 
 fn key_checks(checks: &mut Vec<Check>, local: &Capabilities, daemon: Option<&DaemonDiagnostics>) {

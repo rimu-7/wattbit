@@ -157,9 +157,18 @@ fn error_codes_follow_json_rpc_ranges() {
     ] {
         assert!((-32768..=-32600).contains(&kind.code()), "{kind:?}");
     }
-    for kind in [Unauthorized, Unsupported, Hardware, Timeout] {
+    let application = [Unauthorized, Unsupported, Hardware, Timeout, Conflict];
+    for kind in application {
         assert!((-32099..=-32000).contains(&kind.code()), "{kind:?}");
     }
+    let mut codes: Vec<i32> = application.iter().map(|k| k.code()).collect();
+    codes.dedup();
+    assert_eq!(
+        codes.len(),
+        application.len(),
+        "application codes are distinct"
+    );
+    assert_eq!(Conflict.code(), -32005);
     let parsed: Value = serde_json::to_value(RpcError::new(Hardware, "x")).unwrap();
     assert_eq!(parsed["data"]["kind"], "hardware");
 }

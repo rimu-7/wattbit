@@ -36,6 +36,9 @@ pub type IOServiceInterestCallback = unsafe extern "C" fn(
     message_argument: *mut c_void,
 );
 
+/// `IOPowerSourceCallbackType` from `IOPowerSources.h`.
+pub type IOPowerSourceCallbackType = unsafe extern "C" fn(context: *mut c_void);
+
 /// `IO_OBJECT_NULL`.
 pub const IO_OBJECT_NULL: io_object_t = 0;
 
@@ -141,6 +144,11 @@ extern "C" {
     pub fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
     pub fn IOPSCopyPowerSourcesList(blob: CFTypeRef) -> CFArrayRef;
     pub fn IOPSGetPowerSourceDescription(blob: CFTypeRef, ps: CFTypeRef) -> CFDictionaryRef;
+    /// Returns an owned run loop source (Create rule), or NULL.
+    pub fn IOPSNotificationCreateRunLoopSource(
+        callback: IOPowerSourceCallbackType,
+        context: *mut c_void,
+    ) -> CFRunLoopSourceRef;
 }
 
 /// Human-readable rendering of an `IOReturn`, naming the codes berry

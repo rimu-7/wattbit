@@ -102,6 +102,17 @@ pub enum PowerEvent {
     WillSleep { ack: mpsc::SyncSender<()> },
     /// The system finished waking.
     HasPoweredOn,
+    /// A power source changed: charge level, adapter attach/detach or
+    /// charging state.
+    PowerSourceChanged,
+}
+
+/// What [`spawn_sleep_watcher`] managed to register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatcherFeatures {
+    /// IOPowerSources change notifications; without them the daemon only
+    /// notices changes on its polling interval.
+    pub power_source_notifications: bool,
 }
 
 struct WatcherContext {
@@ -142,10 +153,20 @@ unsafe extern "C" fn power_callback(
     }
 }
 
-/// Registers for system sleep/wake notifications on a dedicated thread
-/// running a CFRunLoop. The registration lasts for the life of the process.
-pub fn spawn_sleep_watcher(events: UnboundedSender<PowerEvent>) -> Result<(), PowerError> {
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), PowerError>>();
+unsafe extern "C" fn power_source_callback(context: *mut c_void) {
+    // SAFETY: `context` is the leaked `WatcherContext`, valid for the rest
+    // of the process.
+    let context = unsafe { &*(context as *const WatcherContext) };
+    let _ = context.events.send(PowerEvent::PowerSourceChanged);
+}
+
+/// Registers for system sleep/wake and power-source change notifications on
+/// a dedicated thread running a CFRunLoop. The registrations last for the
+/// life of the process.
+pub fn spawn_sleep_watcher(
+    events: UnboundedSender<PowerEvent>,
+) -> Result<WatcherFeatures, PowerError> {
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<WatcherFeatures, PowerError>>();
     thread::Builder::new()
         .name("berry-power".into())
         .spawn(move || {
@@ -179,7 +200,20 @@ pub fn spawn_sleep_watcher(events: UnboundedSender<PowerEvent>) -> Result<(), Po
                 let source = ffi::IONotificationPortGetRunLoopSource(port);
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
             }
-            let _ = ready_tx.send(Ok(()));
+            // SAFETY: `context` outlives the source. The returned source is
+            // owned and intentionally kept for the process lifetime; the run
+            // loop retains it as well.
+            let power_source_notifications = unsafe {
+                let source =
+                    ffi::IOPSNotificationCreateRunLoopSource(power_source_callback, context.cast());
+                if !source.is_null() {
+                    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
+                }
+                !source.is_null()
+            };
+            let _ = ready_tx.send(Ok(WatcherFeatures {
+                power_source_notifications,
+            }));
             // SAFETY: runs this thread's run loop until process exit.
             unsafe { CFRunLoopRun() };
         })?;
