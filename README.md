@@ -48,20 +48,63 @@ Requires macOS and a Rust toolchain (edition 2021).
 ```sh
 cargo build --release
 sudo ./target/release/berry install-service
+berry doctor     # check for problems first
 berry status
 ```
 
-`install-service` copies the binary to `/Library/PrivilegedHelperTools/berryd`
-(owned by root, so the daemon never runs a user-writable file), writes
-`/Library/LaunchDaemons/com.berry.daemon.plist` and loads it. Logs go to
-`/var/log/berry.log`.
+`install-service`:
 
-To remove it, run `sudo berry uninstall-service`. Factory charging is restored
-and `/etc/berry.json` is kept; add `--purge` to delete it too.
+- copies the binary to `/Library/PrivilegedHelperTools/berryd`, which is owned
+  by root, so the daemon never runs a user-writable file;
+- links `/usr/local/bin/berry` to it, so `berry` is on your `PATH`;
+- writes `/Library/LaunchDaemons/com.berry.daemon.plist` and loads it.
 
-Don't run berry alongside another charge limiter (AlDente, batt, Battery
-Toolkit and similar tools). Both would write the same SMC keys and override
-each other.
+Logs go to `/var/log/berry.log`.
+
+To update after pulling new code, rebuild and run
+`sudo ./target/release/berry install-service` again. It stops the old daemon,
+replaces the binary and starts the new one.
+
+To remove berry, run `sudo berry uninstall-service`. That restores factory
+charging and removes the daemon, plist and `PATH` link. `/etc/berry.json` is
+kept; add `--purge` to delete it too.
+
+## Other charge limiters
+
+batt, AlDente, actuallymentor's `battery` and Battery Toolkit write the same
+SMC keys as berry. If two of these tools run at once, they override each
+other and the charging state oscillates.
+
+berry checks for them every time it evaluates the policy, including from the
+root daemon, which can see every process. While one is running:
+
+- berry **pauses**: it reads hardware state but writes nothing;
+- `berry status` names the tools and their process IDs;
+- `berry limit` and `berry adapter` are refused with exit status `5`, along
+  with the exact commands to stop and remove each tool;
+- `berry doctor` also lists tools that are installed but not running.
+
+Remove the other tools, and berry resumes control automatically on its next
+evaluation. When it exits while another tool is present, berry undoes only
+the changes it made itself.
+
+## Getting a working limit on macOS 27
+
+1. Run `berry doctor` and remove every tool listed under **Conflict**.
+2. If doctor reports **Charge inhibit: unsupported** (as on macOS 27
+   firmware), choose one of:
+   - Apple's built-in limit: System Settings → Battery → Charging. Leave
+     berry's limit disabled.
+   - berry's adapter fallback:
+
+     ```sh
+     sudo berry set adapter-fallback on
+     sudo berry limit 80
+     ```
+
+     The Mac runs from its battery between 75% and 80% while plugged in.
+3. Run `berry status` and confirm that **Charge control mode** is not
+   `unsupported` and that no **Paused** line appears.
 
 ## Usage
 
@@ -91,7 +134,8 @@ Settings for `berry set`:
 | `adapter-fallback` | off | Hold the limit by bypassing the adapter when no charge-inhibit key exists |
 
 Exit status: `0` success, `1` error, `2` invalid usage, `3` not supported by
-this Mac's hardware, `4` insufficient privileges.
+this Mac's hardware, `4` insufficient privileges, `5` another charge limiter
+is running.
 
 ## How the limit works
 
@@ -103,8 +147,11 @@ With an upper limit *U* and a lower limit *L* (default *L* = max(0, *U* − 5)):
 | `WaitingToResumeCharging` | *L* ≤ charge < *U*, after being suppressed | held off |
 | `ChargingPermitted` | charge < *L*, or below *U* while already charging | allowed |
 
-The daemon re-evaluates every 30 seconds, on wake, and after every change.
-Each SMC write is read back to confirm it took effect.
+The daemon subscribes to IOPowerSources change notifications. It re-evaluates
+as the charge level changes and when the adapter is plugged in or removed,
+so charging stops at the limit rather than overshooting it. It also
+re-evaluates every 30 seconds as a fallback, on wake, and after every change
+to its settings. Each SMC write is read back to confirm it took effect.
 
 ## Safety
 
@@ -136,7 +183,7 @@ anything, use `sudo`.
 
 ## Architecture
 
-```
+```text
 src/
 ├── main.rs            entry point and command dispatch
 ├── cli.rs             clap definitions and argument validation
@@ -148,12 +195,13 @@ src/
 ├── policy.rs          thresholds and the hysteresis state machine
 ├── config.rs          atomic JSON configuration store
 ├── capabilities.rs    SMC key probing and the feature matrix
+├── conflicts.rs       detection of other charge-limit tools
 ├── hardware.rs        verified charge/adapter/LED/BCLM control
 ├── smc/
 │   ├── mod.rs         AppleSMC user client (IOConnectCallStructMethod)
 │   └── keys.rs        key names and exact byte patterns per control
 ├── battery.rs         IOPowerSources + AppleSmartBattery telemetry
-├── power.rs           IOPM assertions and sleep/wake notifications
+├── power.rs           IOPM assertions, sleep/wake and power-source notifications
 ├── doctor.rs          diagnostic checks
 ├── service.rs         LaunchDaemon plist, install and uninstall
 └── ffi.rs             IOKit declarations transcribed from the SDK headers
@@ -179,8 +227,9 @@ One newline-terminated JSON-RPC 2.0 request and one response per connection:
 
 Methods: `status`, `doctor`, `set_limit`, `disable_limit`, `set_adapter`,
 `set_option`. Errors use the standard JSON-RPC codes, plus `-32001`
-(unauthorized), `-32002` (unsupported), `-32003` (hardware) and `-32004`
-(timeout), with `error.data.kind` naming the category.
+(unauthorized), `-32002` (unsupported), `-32003` (hardware), `-32004`
+(timeout) and `-32005` (conflict with another charge limiter), with
+`error.data.kind` naming the category.
 
 ## Development
 
