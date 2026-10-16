@@ -8,9 +8,12 @@
 compile_error!("berry only supports macOS");
 
 pub mod battery;
+pub mod capabilities;
 pub mod config;
 pub mod ffi;
+pub mod hardware;
 pub mod policy;
+pub mod power;
 pub mod smc;
 
 /// Default location of the daemon's Unix domain socket.

@@ -6,7 +6,22 @@
 //! ```
 
 use berry::battery;
+use berry::capabilities;
 use berry::smc::{keys, Smc, SmcError};
+
+#[test]
+#[ignore = "touches real hardware"]
+fn capability_detection_without_write_tests() {
+    let smc = Smc::open();
+    let detection = capabilities::detect(smc.as_ref(), false);
+    let caps = &detection.capabilities;
+    println!("{}", serde_json::to_string_pretty(caps).unwrap());
+    assert!(!caps.writes_verified);
+    // Without root nothing may be reported as verified-supported.
+    for support in [&caps.charge_inhibit, &caps.adapter_control, &caps.firmware_limit] {
+        assert_ne!(*support, capabilities::Support::Supported);
+    }
+}
 
 #[test]
 #[ignore = "touches real hardware"]
