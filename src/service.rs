@@ -20,12 +20,15 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 
+use crate::conflicts;
 use crate::CONFIG_PATH;
 
 pub const LABEL: &str = "com.berry.daemon";
 pub const PLIST_PATH: &str = "/Library/LaunchDaemons/com.berry.daemon.plist";
 pub const INSTALLED_BINARY: &str = "/Library/PrivilegedHelperTools/berryd";
 pub const LOG_PATH: &str = "/var/log/berry.log";
+/// Symlink that puts the `berry` command on the default PATH.
+pub const CLI_LINK: &str = "/usr/local/bin/berry";
 
 const LAUNCHCTL: &str = "/bin/launchctl";
 const LAUNCHCTL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -203,15 +206,69 @@ pub fn install() -> anyhow::Result<String> {
         write_root_file(&installed, &binary, 0o755)?;
     }
     write_root_file(Path::new(PLIST_PATH), plist(&installed).as_bytes(), 0o644)?;
+    let cli = link_cli()?;
 
     // A previous `launchctl disable` would make bootstrap fail.
     launchctl_checked(&["enable", &service_target()])?;
     launchctl_checked(&["bootstrap", "system", PLIST_PATH])?;
 
-    Ok(format!(
+    let mut summary = format!(
         "Installed {INSTALLED_BINARY} and {PLIST_PATH}; the daemon is running.\n\
+         {cli}\n\
          Logs: {LOG_PATH}. Check it with `berry status`."
+    );
+    let others = conflicts::running();
+    if !others.is_empty() {
+        summary.push_str(&format!(
+            "\n\nWarning: {} also control charging, so berry stays paused until they are \
+             removed. Run `berry doctor` for the exact removal commands.",
+            conflicts::summarize(&others)
+        ));
+    }
+    Ok(summary)
+}
+
+/// Links [`CLI_LINK`] to the installed binary so `berry` is on the PATH.
+/// An existing file that is not berry's link is left alone.
+fn link_cli() -> anyhow::Result<String> {
+    let link = Path::new(CLI_LINK);
+    match fs::symlink_metadata(link) {
+        Ok(meta) => {
+            let ours = meta.file_type().is_symlink()
+                && fs::read_link(link).is_ok_and(|target| target == Path::new(INSTALLED_BINARY));
+            return Ok(if ours {
+                format!("The `berry` command is available at {CLI_LINK}.")
+            } else {
+                format!(
+                    "{CLI_LINK} already exists and is not berry's; left it unchanged. \
+                     Run berry as {INSTALLED_BINARY} instead."
+                )
+            });
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("inspecting {CLI_LINK}")),
+    }
+    let dir = link.parent().context("link path has no parent")?;
+    if !dir.exists() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        fs::set_permissions(dir, Permissions::from_mode(0o755))?;
+    }
+    std::os::unix::fs::symlink(INSTALLED_BINARY, link)
+        .with_context(|| format!("linking {CLI_LINK}"))?;
+    Ok(format!(
+        "The `berry` command is now available at {CLI_LINK}."
     ))
+}
+
+/// Removes [`CLI_LINK`] if it is berry's link.
+fn unlink_cli() -> anyhow::Result<bool> {
+    let link = Path::new(CLI_LINK);
+    let ours = fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
+        && fs::read_link(link).is_ok_and(|target| target == Path::new(INSTALLED_BINARY));
+    if ours {
+        fs::remove_file(link).with_context(|| format!("removing {CLI_LINK}"))?;
+    }
+    Ok(ours)
 }
 
 /// Stops the service and removes the plist and binary. With `purge`, also
@@ -225,6 +282,9 @@ pub fn uninstall(purge: bool) -> anyhow::Result<String> {
     }
     if remove_if_present(Path::new(PLIST_PATH))? {
         done.push(format!("removed {PLIST_PATH}"));
+    }
+    if unlink_cli()? {
+        done.push(format!("removed {CLI_LINK}"));
     }
     if remove_if_present(Path::new(INSTALLED_BINARY))? {
         done.push(format!("removed {INSTALLED_BINARY}"));
