@@ -8,6 +8,7 @@
 compile_error!("berry only supports macOS");
 
 pub mod ffi;
+pub mod smc;
 
 /// Default location of the daemon's Unix domain socket.
 pub const SOCKET_PATH: &str = "/var/run/berry.sock";
