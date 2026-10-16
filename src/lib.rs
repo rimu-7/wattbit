@@ -7,6 +7,7 @@
 #[cfg(not(target_os = "macos"))]
 compile_error!("berry only supports macOS");
 
+pub mod battery;
 pub mod ffi;
 pub mod smc;
 

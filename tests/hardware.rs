@@ -5,7 +5,24 @@
 //! cargo test --test hardware -- --ignored --nocapture
 //! ```
 
+use berry::battery;
 use berry::smc::{keys, Smc, SmcError};
+
+#[test]
+#[ignore = "touches real hardware"]
+fn battery_telemetry_is_plausible() {
+    match battery::read() {
+        Ok(t) => {
+            println!("{t:#?}");
+            assert!(t.charge_percent <= 100);
+            if let (Some(full), Some(design)) = (t.full_capacity_mah, t.design_capacity_mah) {
+                assert!(full > 0 && design > 0);
+            }
+        }
+        Err(battery::BatteryError::NoBattery) => println!("no internal battery (desktop Mac)"),
+        Err(e) => panic!("battery read failed: {e}"),
+    }
+}
 
 #[test]
 #[ignore = "touches real hardware"]
