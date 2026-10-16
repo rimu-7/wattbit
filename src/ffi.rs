@@ -72,6 +72,11 @@ pub const kIOPMAssertionLevelOn: IOPMAssertionLevel = 255;
 /// Value of `kIOPMAssertPreventUserIdleSystemSleep`.
 pub const ASSERTION_PREVENT_USER_IDLE_SYSTEM_SLEEP: &str = "PreventUserIdleSystemSleep";
 /// Value of `kIOPMAssertionTypePreventSystemSleep`.
+///
+/// `IOPMLib.h` marks this type deprecated since 10.9 and "not supported",
+/// but powerd still honours it: `/usr/bin/caffeinate -s` uses it, and an
+/// assertion of this type appears in `pmset -g assertions` (verified on
+/// macOS 27.0.1). macOS only applies it while on AC power.
 pub const ASSERTION_PREVENT_SYSTEM_SLEEP: &str = "PreventSystemSleep";
 
 // IOPSKeys.h
