@@ -1,0 +1,281 @@
+//! `berry doctor`: diagnostic checks.
+//!
+//! Local checks run as the invoking user and never write to the SMC. Write
+//! access is reported from the daemon, which tests it as root at startup.
+
+use std::fmt::Write as _;
+use std::path::Path;
+
+use crate::battery::{self, BatteryError};
+use crate::capabilities::{self, Capabilities, Support};
+use crate::client::{Client, ClientError};
+use crate::config::ConfigStore;
+use crate::protocol::{Call, DaemonDiagnostics, Reply};
+use crate::service::{INSTALLED_BINARY, PLIST_PATH};
+use crate::smc::Smc;
+use crate::CONFIG_PATH;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Pass,
+    Info,
+    Warn,
+    Fail,
+}
+
+impl Level {
+    fn symbol(self) -> &'static str {
+        match self {
+            Level::Pass => "✔",
+            Level::Info => "•",
+            Level::Warn => "!",
+            Level::Fail => "✘",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Check {
+    pub level: Level,
+    pub name: String,
+    pub detail: String,
+}
+
+fn check(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Check {
+    Check {
+        level,
+        name: name.into(),
+        detail: detail.into(),
+    }
+}
+
+/// `smc_control` marks features whose support is established by an SMC
+/// write test, as opposed to OS facilities such as sleep hooks.
+fn support_check(name: &str, support: &Support, smc_control: bool) -> Check {
+    match support {
+        Support::Supported if smc_control => {
+            check(Level::Pass, name, "supported (write access verified)")
+        }
+        Support::Supported => check(Level::Pass, name, "supported"),
+        Support::Unverified { reason } => check(Level::Warn, name, format!("unverified: {reason}")),
+        Support::Unsupported { reason } => {
+            check(Level::Warn, name, format!("unsupported: {reason}"))
+        }
+    }
+}
+
+/// Runs every check. Never fails; problems are reported as checks.
+pub async fn run(socket: &Path) -> Vec<Check> {
+    let mut checks = Vec::new();
+
+    let host = capabilities::host_info();
+    let mut detail = format!(
+        "{}, {}, macOS {}",
+        host.arch,
+        host.model.as_deref().unwrap_or("unknown model"),
+        host.os_version.as_deref().unwrap_or("unknown")
+    );
+    let level = if host.translated {
+        detail.push_str("; berry is running under Rosetta 2, install the arm64 build");
+        Level::Warn
+    } else {
+        Level::Pass
+    };
+    checks.push(check(level, "Architecture", detail));
+
+    match battery::read() {
+        Ok(b) => {
+            let mut detail = format!("{}%, {}", b.charge_percent, b.activity().label());
+            if let Some(cycles) = b.cycle_count {
+                let _ = write!(detail, ", {cycles} cycles");
+            }
+            if let Some(health) = b.health_percent() {
+                let _ = write!(detail, ", {health}% of design capacity");
+            }
+            checks.push(check(Level::Pass, "Battery", detail));
+        }
+        Err(BatteryError::NoBattery) => checks.push(check(
+            Level::Warn,
+            "Battery",
+            "no internal battery; nothing to manage",
+        )),
+        Err(e) => checks.push(check(Level::Fail, "Battery", e.to_string())),
+    }
+
+    let smc = Smc::open();
+    match &smc {
+        Ok(smc) => {
+            let detail = match smc.key_count() {
+                Ok(count) => format!("AppleSMC user client open, {count} keys"),
+                Err(_) => "AppleSMC user client open".to_owned(),
+            };
+            checks.push(check(Level::Pass, "SMC connection", detail));
+        }
+        Err(e) => checks.push(check(Level::Fail, "SMC connection", e.to_string())),
+    }
+    let local = capabilities::detect(smc.as_ref(), false).capabilities;
+
+    let daemon = Client::new(socket).call(Call::Doctor).await;
+    let diagnostics = match daemon {
+        Ok(Reply::Diagnostics(d)) => {
+            let level = if d.euid == 0 {
+                Level::Pass
+            } else {
+                Level::Warn
+            };
+            let mut detail = format!(
+                "berryd {} answering on {} (pid {}, uid {})",
+                d.version, d.socket_path, d.pid, d.euid
+            );
+            if d.euid != 0 {
+                detail.push_str("; not root, so hardware writes are disabled");
+            }
+            checks.push(check(level, "Daemon socket", detail));
+            if let Some(error) = &d.last_error {
+                checks.push(check(Level::Warn, "Daemon state", error.clone()));
+            }
+            Some(d)
+        }
+        Ok(_) => {
+            checks.push(check(
+                Level::Fail,
+                "Daemon socket",
+                "unexpected reply to `doctor`",
+            ));
+            None
+        }
+        Err(ClientError::NotRunning { path }) => {
+            checks.push(check(
+                Level::Fail,
+                "Daemon socket",
+                format!("nothing is listening on {path}"),
+            ));
+            None
+        }
+        Err(e) => {
+            checks.push(check(Level::Fail, "Daemon socket", e.to_string()));
+            None
+        }
+    };
+
+    key_checks(&mut checks, &local, diagnostics.as_deref());
+
+    let caps = diagnostics.as_ref().map_or(&local, |d| &d.capabilities);
+    if let Some(d) = &diagnostics {
+        checks.push(check(Level::Info, "Charge control mode", d.mode.label()));
+    }
+    checks.push(support_check("Charge inhibit", &caps.charge_inhibit, true));
+    checks.push(support_check(
+        "Firmware limit (BCLM)",
+        &caps.firmware_limit,
+        true,
+    ));
+    checks.push(support_check(
+        "Power adapter control",
+        &caps.adapter_control,
+        true,
+    ));
+    checks.push(support_check(
+        "MagSafe LED control",
+        &caps.magsafe_led,
+        true,
+    ));
+    checks.push(support_check("Sleep hooks", &caps.sleep_hooks, false));
+
+    let config_path = diagnostics
+        .as_ref()
+        .map_or(CONFIG_PATH.to_owned(), |d| d.config_path.clone());
+    match ConfigStore::new(&config_path).load() {
+        Ok(Some(_)) => checks.push(check(
+            Level::Pass,
+            "Config file",
+            format!("{config_path} is valid"),
+        )),
+        Ok(None) => checks.push(check(
+            Level::Info,
+            "Config file",
+            format!("{config_path} does not exist; defaults are in use"),
+        )),
+        Err(e) => checks.push(check(Level::Fail, "Config file", e.to_string())),
+    }
+
+    let plist = Path::new(PLIST_PATH).exists();
+    let binary = Path::new(INSTALLED_BINARY).exists();
+    checks.push(match (plist, binary) {
+        (true, true) => check(
+            Level::Pass,
+            "LaunchDaemon",
+            format!("{PLIST_PATH} installed"),
+        ),
+        (false, false) => check(
+            Level::Info,
+            "LaunchDaemon",
+            "not installed; run `sudo berry install-service`",
+        ),
+        _ => check(
+            Level::Warn,
+            "LaunchDaemon",
+            "partially installed; run `sudo berry install-service` again",
+        ),
+    });
+
+    checks
+}
+
+fn key_checks(checks: &mut Vec<Check>, local: &Capabilities, daemon: Option<&DaemonDiagnostics>) {
+    for probe in &local.keys {
+        let verified = daemon
+            .and_then(|d| d.capabilities.keys.iter().find(|k| k.key == probe.key))
+            .and_then(|k| k.writable);
+        let name = format!("SMC key {}", probe.key);
+        let item = if !probe.present {
+            check(Level::Info, name, format!("absent ({})", probe.purpose))
+        } else if !probe.readable {
+            check(
+                Level::Warn,
+                name,
+                format!(
+                    "{}: {}",
+                    probe.purpose,
+                    probe.note.as_deref().unwrap_or("not readable")
+                ),
+            )
+        } else {
+            let write = match verified {
+                Some(true) => "writable (verified by daemon)",
+                Some(false) => "not writable",
+                None => "write access not tested",
+            };
+            check(
+                if verified == Some(false) {
+                    Level::Warn
+                } else {
+                    Level::Pass
+                },
+                name,
+                format!(
+                    "{}: readable, type {:?}, value [{}], {write}",
+                    probe.purpose,
+                    probe.data_type.as_deref().unwrap_or("?"),
+                    probe.value.as_deref().unwrap_or("")
+                ),
+            )
+        };
+        checks.push(item);
+    }
+}
+
+pub fn render(checks: &[Check]) -> String {
+    let mut out = String::new();
+    for c in checks {
+        let _ = writeln!(out, "{} {}: {}", c.level.symbol(), c.name, c.detail);
+    }
+    let failures = checks.iter().filter(|c| c.level == Level::Fail).count();
+    let warnings = checks.iter().filter(|c| c.level == Level::Warn).count();
+    let _ = writeln!(out, "\n{failures} failure(s), {warnings} warning(s)");
+    out
+}
+
+pub fn has_failures(checks: &[Check]) -> bool {
+    checks.iter().any(|c| c.level == Level::Fail)
+}
