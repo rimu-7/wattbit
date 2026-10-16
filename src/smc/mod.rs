@@ -279,15 +279,16 @@ impl Smc {
     /// Number of keys the SMC exposes.
     pub fn key_count(&self) -> Result<u32, SmcError> {
         let value = self.read(KEY_COUNT)?;
-        let bytes: [u8; 4] = value
-            .bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| SmcError::SizeMismatch {
-                key: KEY_COUNT,
-                expected: 4,
-                actual: value.bytes.len(),
-            })?;
+        let bytes: [u8; 4] =
+            value
+                .bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| SmcError::SizeMismatch {
+                    key: KEY_COUNT,
+                    expected: 4,
+                    actual: value.bytes.len(),
+                })?;
         Ok(u32::from_be_bytes(bytes))
     }
 
@@ -361,7 +362,10 @@ mod tests {
         let key: FourCC = "CH0C".parse().unwrap();
         assert_eq!(key.to_u32(), 0x4348_3043);
         assert_eq!(FourCC::from_u32(0x4348_3043), key);
-        assert_eq!(FourCC::from_u32(u32::from_be_bytes(*b"ui8 ")).to_string(), "ui8 ");
+        assert_eq!(
+            FourCC::from_u32(u32::from_be_bytes(*b"ui8 ")).to_string(),
+            "ui8 "
+        );
     }
 
     #[test]

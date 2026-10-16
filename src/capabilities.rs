@@ -21,8 +21,12 @@ use crate::smc::{Smc, SmcError, SmcValue};
 pub enum Support {
     Supported,
     /// Present and plausible, but write access was not tested.
-    Unverified { reason: String },
-    Unsupported { reason: String },
+    Unverified {
+        reason: String,
+    },
+    Unsupported {
+        reason: String,
+    },
 }
 
 impl Support {
@@ -335,7 +339,10 @@ impl<'a> Prober<'a> {
             return Support::unsupported("SMC key ACLC is not present (no MagSafe LED control)");
         };
         if value.bytes.len() != 1 {
-            return Support::unsupported(format!("SMC key ACLC has size {}, expected 1", value.bytes.len()));
+            return Support::unsupported(format!(
+                "SMC key ACLC has size {}, expected 1",
+                value.bytes.len()
+            ));
         }
         // Writing back a non-system value would pin the LED, so the write
         // test only runs while the system owns the LED.
@@ -409,14 +416,21 @@ fn sysctl_i32(name: &CStr) -> Option<i32> {
 fn sysctl_string(name: &CStr) -> Option<String> {
     let mut len = 0usize;
     // SAFETY: a null buffer asks sysctl for the required length.
-    let rc = unsafe { libc::sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0) };
+    let rc =
+        unsafe { libc::sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0) };
     if rc != 0 || len == 0 || len > 1024 {
         return None;
     }
     let mut buf = vec![0u8; len];
     // SAFETY: `buf` is `len` bytes long.
     let rc = unsafe {
-        libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, ptr::null_mut(), 0)
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
     };
     if rc != 0 {
         return None;
@@ -460,11 +474,17 @@ mod tests {
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Native);
 
         let c = caps(no(), Support::Supported, Support::Supported);
-        assert_eq!(c.charge_control_mode(true), ChargeControlMode::FirmwareLimit);
+        assert_eq!(
+            c.charge_control_mode(true),
+            ChargeControlMode::FirmwareLimit
+        );
 
         let c = caps(no(), no(), Support::Supported);
         assert_eq!(c.charge_control_mode(false), ChargeControlMode::Unsupported);
-        assert_eq!(c.charge_control_mode(true), ChargeControlMode::AdapterFallback);
+        assert_eq!(
+            c.charge_control_mode(true),
+            ChargeControlMode::AdapterFallback
+        );
 
         let c = caps(no(), no(), no());
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Unsupported);

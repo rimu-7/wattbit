@@ -18,7 +18,11 @@ fn capability_detection_without_write_tests() {
     println!("{}", serde_json::to_string_pretty(caps).unwrap());
     assert!(!caps.writes_verified);
     // Without root nothing may be reported as verified-supported.
-    for support in [&caps.charge_inhibit, &caps.adapter_control, &caps.firmware_limit] {
+    for support in [
+        &caps.charge_inhibit,
+        &caps.adapter_control,
+        &caps.firmware_limit,
+    ] {
         assert_ne!(*support, capabilities::Support::Supported);
     }
 }

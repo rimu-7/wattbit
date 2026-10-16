@@ -174,7 +174,9 @@ impl Controller {
             return Some(current);
         }
         match self
-            .write("charge inhibit", move |hw| hw.set_charging_inhibited(inhibit))
+            .write("charge inhibit", move |hw| {
+                hw.set_charging_inhibited(inhibit)
+            })
             .await
         {
             Ok(()) => {
@@ -206,7 +208,10 @@ impl Controller {
             .await
         {
             Ok(()) => {
-                log!("power adapter {}", if enabled { "enabled" } else { "disabled" });
+                log!(
+                    "power adapter {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
                 Some(enabled)
             }
             Err(e) => {
@@ -312,7 +317,8 @@ impl Controller {
             ChargeControlMode::AdapterFallback => {}
             ChargeControlMode::Unsupported => {
                 if limit_active {
-                    errors.push("a charge limit is configured but this Mac cannot enforce it".into());
+                    errors
+                        .push("a charge limit is configured but this Mac cannot enforce it".into());
                 }
             }
         }
@@ -321,7 +327,11 @@ impl Controller {
             let mut want_enabled = st.config.adapter_enabled;
             // The fallback bypass is never held across sleep: the daemon
             // cannot watch the safety floor while the system sleeps.
-            if mode == ChargeControlMode::AdapterFallback && limit_active && !policy_allows && !st.asleep {
+            if mode == ChargeControlMode::AdapterFallback
+                && limit_active
+                && !policy_allows
+                && !st.asleep
+            {
                 want_enabled = false;
             }
             if charge.is_some_and(adapter_must_be_restored) {
@@ -344,14 +354,18 @@ impl Controller {
             limit_active && policy_allows && on_ac && mode != ChargeControlMode::Unsupported;
         sync_assertion(
             &mut st.assertions.charging_idle,
-            assertions_allowed && st.config.prevent_idle_sleep_when_charging && charging_toward_limit,
+            assertions_allowed
+                && st.config.prevent_idle_sleep_when_charging
+                && charging_toward_limit,
             AssertionKind::PreventUserIdleSystemSleep,
             "berry: charging toward the charge limit",
             &mut errors,
         );
         sync_assertion(
             &mut st.assertions.charging_system,
-            assertions_allowed && st.config.prevent_system_sleep_when_charging && charging_toward_limit,
+            assertions_allowed
+                && st.config.prevent_system_sleep_when_charging
+                && charging_toward_limit,
             AssertionKind::PreventSystemSleep,
             "berry: charging toward the charge limit",
             &mut errors,
@@ -424,14 +438,20 @@ impl Controller {
             self.ensure_adapter(true, &mut errors).await;
         }
         if st.led.take().is_some() {
-            if let Err(e) = self.write("MagSafe LED", |hw| hw.set_led(LedMode::System)).await {
+            if let Err(e) = self
+                .write("MagSafe LED", |hw| hw.set_led(LedMode::System))
+                .await
+            {
                 errors.push(format!("MagSafe LED: {e}"));
             }
         }
         if errors.is_empty() {
             log!("factory charging behaviour restored");
         } else {
-            log!("restoring factory charging behaviour failed: {}", errors.join("; "));
+            log!(
+                "restoring factory charging behaviour failed: {}",
+                errors.join("; ")
+            );
         }
     }
 
@@ -448,7 +468,10 @@ impl Controller {
 
     async fn status(&self) -> StatusReport {
         let mut st = self.state.lock().await;
-        if st.last_refresh.is_none_or(|t| t.elapsed() >= MIN_REFRESH_INTERVAL) {
+        if st
+            .last_refresh
+            .is_none_or(|t| t.elapsed() >= MIN_REFRESH_INTERVAL)
+        {
             self.reconcile_locked(&mut st).await;
         }
         StatusReport {
@@ -486,7 +509,10 @@ impl Controller {
 
     fn commit(&self, st: &mut State, next: Config) -> Result<(), RpcError> {
         self.store.save(&next).map_err(|e| {
-            RpcError::new(ErrorKind::Internal, format!("cannot save configuration: {e}"))
+            RpcError::new(
+                ErrorKind::Internal,
+                format!("cannot save configuration: {e}"),
+            )
         })?;
         st.config = next;
         st.config_warning = None;
@@ -507,7 +533,10 @@ impl Controller {
     fn unsupported_limit_reason(&self) -> String {
         let mut message = format!(
             "this Mac exposes no usable charge-inhibit control ({})",
-            self.caps.charge_inhibit.reason().unwrap_or("unknown reason")
+            self.caps
+                .charge_inhibit
+                .reason()
+                .unwrap_or("unknown reason")
         );
         if self.caps.adapter_control.is_usable() {
             message.push_str(
@@ -524,7 +553,10 @@ impl Controller {
         let mut st = self.state.lock().await;
         let mode = self.caps.charge_control_mode(st.config.adapter_fallback);
         if mode == ChargeControlMode::Unsupported {
-            return Err(RpcError::new(ErrorKind::Unsupported, self.unsupported_limit_reason()));
+            return Err(RpcError::new(
+                ErrorKind::Unsupported,
+                self.unsupported_limit_reason(),
+            ));
         }
         let mut next = st.config.clone();
         next.charge_limit = Some(thresholds);
@@ -540,9 +572,9 @@ impl Controller {
             ChargeControlMode::FirmwareLimit => message.push_str(
                 " The firmware enforces the upper limit; the lower limit is not used in this mode.",
             ),
-            ChargeControlMode::AdapterFallback => message.push_str(
-                " The Mac runs from its battery while the limit is held.",
-            ),
+            ChargeControlMode::AdapterFallback => {
+                message.push_str(" The Mac runs from its battery while the limit is held.")
+            }
             _ => {}
         }
         Ok(Reply::Ack { message })
@@ -567,7 +599,10 @@ impl Controller {
                 ErrorKind::Unsupported,
                 format!(
                     "power adapter control is not supported on this Mac: {}",
-                    self.caps.adapter_control.reason().unwrap_or("unknown reason")
+                    self.caps
+                        .adapter_control
+                        .reason()
+                        .unwrap_or("unknown reason")
                 ),
             ));
         }
@@ -605,7 +640,9 @@ impl Controller {
         if enabled {
             let required = match option {
                 ConfigOption::MagsafeLed => Some(("MagSafe LED control", &self.caps.magsafe_led)),
-                ConfigOption::AdapterFallback => Some(("adapter control", &self.caps.adapter_control)),
+                ConfigOption::AdapterFallback => {
+                    Some(("adapter control", &self.caps.adapter_control))
+                }
                 _ => None,
             };
             if let Some((name, support)) = required {
@@ -626,7 +663,10 @@ impl Controller {
         self.commit(&mut st, next)?;
         if option == ConfigOption::AllowNonRoot {
             super::set_socket_permissions(&self.socket_path, enabled).map_err(|e| {
-                RpcError::new(ErrorKind::Internal, format!("cannot update socket permissions: {e}"))
+                RpcError::new(
+                    ErrorKind::Internal,
+                    format!("cannot update socket permissions: {e}"),
+                )
             })?;
         }
         self.reconcile_locked(&mut st).await;

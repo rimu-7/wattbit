@@ -25,8 +25,14 @@ fn default_lower_saturates_at_zero() {
 
 #[test]
 fn upper_limit_range_is_enforced() {
-    assert_eq!(Thresholds::new(49, None), Err(PolicyError::UpperOutOfRange(49)));
-    assert_eq!(Thresholds::new(101, None), Err(PolicyError::UpperOutOfRange(101)));
+    assert_eq!(
+        Thresholds::new(49, None),
+        Err(PolicyError::UpperOutOfRange(49))
+    );
+    assert_eq!(
+        Thresholds::new(101, None),
+        Err(PolicyError::UpperOutOfRange(101))
+    );
     assert!(Thresholds::new(50, None).is_ok());
     assert!(Thresholds::new(100, None).is_ok());
 }
@@ -37,7 +43,10 @@ fn explicit_lower_must_be_below_upper() {
     assert_eq!(t(80, Some(0)).lower(), 0);
     assert_eq!(
         Thresholds::new(80, Some(80)),
-        Err(PolicyError::LowerNotBelowUpper { lower: 80, upper: 80 })
+        Err(PolicyError::LowerNotBelowUpper {
+            lower: 80,
+            upper: 80
+        })
     );
     assert!(Thresholds::new(80, Some(90)).is_err());
 }
@@ -47,11 +56,26 @@ fn transitions_at_boundaries() {
     let th = t(80, None);
     assert_eq!(next_state(None, 80, th), ChargingSuppressed);
     assert_eq!(next_state(None, 100, th), ChargingSuppressed);
-    assert_eq!(next_state(Some(ChargingSuppressed), 79, th), WaitingToResumeCharging);
-    assert_eq!(next_state(Some(WaitingToResumeCharging), 75, th), WaitingToResumeCharging);
-    assert_eq!(next_state(Some(WaitingToResumeCharging), 74, th), ChargingPermitted);
-    assert_eq!(next_state(Some(ChargingPermitted), 79, th), ChargingPermitted);
-    assert_eq!(next_state(Some(ChargingPermitted), 80, th), ChargingSuppressed);
+    assert_eq!(
+        next_state(Some(ChargingSuppressed), 79, th),
+        WaitingToResumeCharging
+    );
+    assert_eq!(
+        next_state(Some(WaitingToResumeCharging), 75, th),
+        WaitingToResumeCharging
+    );
+    assert_eq!(
+        next_state(Some(WaitingToResumeCharging), 74, th),
+        ChargingPermitted
+    );
+    assert_eq!(
+        next_state(Some(ChargingPermitted), 79, th),
+        ChargingPermitted
+    );
+    assert_eq!(
+        next_state(Some(ChargingPermitted), 80, th),
+        ChargingSuppressed
+    );
 }
 
 #[test]
@@ -97,7 +121,11 @@ fn changing_thresholds_resets_state() {
     assert_eq!(limiter.state(), Some(ChargingSuppressed));
 
     limiter.set_thresholds(Some(t(80, None)));
-    assert_eq!(limiter.state(), Some(ChargingSuppressed), "same thresholds keep state");
+    assert_eq!(
+        limiter.state(),
+        Some(ChargingSuppressed),
+        "same thresholds keep state"
+    );
 
     limiter.set_thresholds(Some(t(90, None)));
     assert_eq!(limiter.state(), None);

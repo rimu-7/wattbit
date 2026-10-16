@@ -153,8 +153,8 @@ fn internal_battery_description() -> Result<Dict, BatteryError> {
         // SAFETY: non-null Get-rule dictionary; wrapping retains it so it
         // outlives `blob`.
         let description: Dict = unsafe { Dict::wrap_under_get_rule(description) };
-        let is_internal =
-            string(&description, ffi::kIOPSTypeKey).as_deref() == Some(ffi::kIOPSInternalBatteryType);
+        let is_internal = string(&description, ffi::kIOPSTypeKey).as_deref()
+            == Some(ffi::kIOPSInternalBatteryType);
         let present = boolean(&description, ffi::kIOPSIsPresentKey).unwrap_or(true);
         if is_internal && present {
             return Ok(description);
@@ -290,23 +290,25 @@ fn minutes(value: i64) -> Option<u32> {
 }
 
 fn number(dict: &Dict, key: &str) -> Option<i64> {
-    dict.find(&CFString::new(key))?.downcast::<CFNumber>()?.to_i64()
+    dict.find(CFString::new(key))?
+        .downcast::<CFNumber>()?
+        .to_i64()
 }
 
 fn boolean(dict: &Dict, key: &str) -> Option<bool> {
-    dict.find(&CFString::new(key))?
+    dict.find(CFString::new(key))?
         .downcast::<CFBoolean>()
         .map(bool::from)
 }
 
 fn string(dict: &Dict, key: &str) -> Option<String> {
-    dict.find(&CFString::new(key))?
+    dict.find(CFString::new(key))?
         .downcast::<CFString>()
         .map(|s| s.to_string())
 }
 
 fn dictionary(dict: &Dict, key: &str) -> Option<Dict> {
-    let value = dict.find(&CFString::new(key))?;
+    let value = dict.find(CFString::new(key))?;
     let untyped = value.downcast::<CFDictionary>()?;
     // SAFETY: the reference is a live CFDictionary; wrapping under the Get
     // rule retains it. Key and value types are checked at each lookup.

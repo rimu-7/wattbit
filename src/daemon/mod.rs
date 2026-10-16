@@ -82,7 +82,10 @@ pub fn authorize(
     if call.requires_root() {
         return Err(RpcError::new(
             ErrorKind::Unauthorized,
-            format!("`{}` changes hardware state and requires root; re-run with sudo", call.method()),
+            format!(
+                "`{}` changes hardware state and requires root; re-run with sudo",
+                call.method()
+            ),
         ));
     }
     if !allow_non_root {
@@ -98,7 +101,9 @@ pub async fn run(options: DaemonOptions) -> anyhow::Result<()> {
     // SAFETY: geteuid has no preconditions.
     let euid = unsafe { libc::geteuid() };
     if euid != 0 && !options.read_only {
-        bail!("the daemon must run as root (pass --read-only to observe without changing hardware)");
+        bail!(
+            "the daemon must run as root (pass --read-only to observe without changing hardware)"
+        );
     }
 
     let store = ConfigStore::new(&options.config);
@@ -149,7 +154,11 @@ pub async fn run(options: DaemonOptions) -> anyhow::Result<()> {
     log!(
         "listening on {}{}",
         options.socket.display(),
-        if options.read_only { " (read-only)" } else { "" }
+        if options.read_only {
+            " (read-only)"
+        } else {
+            ""
+        }
     );
 
     loop {
@@ -224,7 +233,10 @@ fn bind_socket(path: &Path, allow_non_root: bool) -> anyhow::Result<UnixListener
     match fs::symlink_metadata(path) {
         Ok(meta) => {
             if !meta.file_type().is_socket() {
-                bail!("{} exists and is not a socket; refusing to replace it", path.display());
+                bail!(
+                    "{} exists and is not a socket; refusing to replace it",
+                    path.display()
+                );
             }
             if std::os::unix::net::UnixStream::connect(path).is_ok() {
                 bail!("another daemon is already listening on {}", path.display());
@@ -362,7 +374,10 @@ mod tests {
     #[test]
     fn users_may_never_write() {
         for call in [
-            Call::SetLimit { upper: 80, lower: 75 },
+            Call::SetLimit {
+                upper: 80,
+                lower: 75,
+            },
             Call::DisableLimit,
             Call::SetAdapter { enabled: true },
             Call::SetOption {

@@ -32,7 +32,9 @@ pub enum AssertionKind {
 impl AssertionKind {
     fn type_name(self) -> &'static str {
         match self {
-            AssertionKind::PreventUserIdleSystemSleep => ffi::ASSERTION_PREVENT_USER_IDLE_SYSTEM_SLEEP,
+            AssertionKind::PreventUserIdleSystemSleep => {
+                ffi::ASSERTION_PREVENT_USER_IDLE_SYSTEM_SLEEP
+            }
             AssertionKind::PreventSystemSleep => ffi::ASSERTION_PREVENT_SYSTEM_SLEEP,
         }
     }
@@ -156,7 +158,12 @@ pub fn spawn_sleep_watcher(events: UnboundedSender<PowerEvent>) -> Result<(), Po
             // SAFETY: `context` stays valid for the process lifetime and the
             // out-pointers are valid.
             let root = unsafe {
-                ffi::IORegisterForSystemPower(context.cast(), &mut port, power_callback, &mut notifier)
+                ffi::IORegisterForSystemPower(
+                    context.cast(),
+                    &mut port,
+                    power_callback,
+                    &mut notifier,
+                )
             };
             if root == ffi::IO_OBJECT_NULL || port.is_null() {
                 // SAFETY: registration failed, so nothing else references it.
@@ -187,11 +194,9 @@ mod tests {
 
     #[test]
     fn assertions_can_be_taken_and_released() {
-        let assertion = PowerAssertion::acquire(
-            AssertionKind::PreventUserIdleSystemSleep,
-            "berry unit test",
-        )
-        .expect("unprivileged processes may hold idle-sleep assertions");
+        let assertion =
+            PowerAssertion::acquire(AssertionKind::PreventUserIdleSystemSleep, "berry unit test")
+                .expect("unprivileged processes may hold idle-sleep assertions");
         assert_eq!(assertion.kind(), AssertionKind::PreventUserIdleSystemSleep);
     }
 }

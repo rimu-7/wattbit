@@ -126,7 +126,11 @@ impl ChargeState {
 /// start, or thresholds just changed). A reading inside the deadband then
 /// permits charging up to the upper limit, so newly set limits are reached
 /// rather than left short.
-pub fn next_state(previous: Option<ChargeState>, charge: u8, thresholds: Thresholds) -> ChargeState {
+pub fn next_state(
+    previous: Option<ChargeState>,
+    charge: u8,
+    thresholds: Thresholds,
+) -> ChargeState {
     if charge >= thresholds.upper {
         ChargeState::ChargingSuppressed
     } else if charge < thresholds.lower {

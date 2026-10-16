@@ -59,7 +59,11 @@ fn save_then_load_round_trips() {
 fn defaults_fill_missing_fields() {
     let dir = TempDir::new("defaults");
     let path = dir.0.join("berry.json");
-    fs::write(&path, r#"{"version":1,"charge_limit":{"upper":80,"lower":75}}"#).unwrap();
+    fs::write(
+        &path,
+        r#"{"version":1,"charge_limit":{"upper":80,"lower":75}}"#,
+    )
+    .unwrap();
     let config = ConfigStore::new(&path).load().unwrap().unwrap();
     assert_eq!(config.charge_limit, Some(Thresholds::default()));
     assert!(config.adapter_enabled);
@@ -78,7 +82,10 @@ fn invalid_thresholds_are_rejected() {
     ] {
         fs::write(&path, bad).unwrap();
         assert!(
-            matches!(ConfigStore::new(&path).load(), Err(ConfigError::Parse { .. })),
+            matches!(
+                ConfigStore::new(&path).load(),
+                Err(ConfigError::Parse { .. })
+            ),
             "{bad} should be rejected"
         );
     }
@@ -89,10 +96,16 @@ fn malformed_and_future_files_are_rejected() {
     let dir = TempDir::new("malformed");
     let path = dir.0.join("berry.json");
     fs::write(&path, "{not json").unwrap();
-    assert!(matches!(ConfigStore::new(&path).load(), Err(ConfigError::Parse { .. })));
+    assert!(matches!(
+        ConfigStore::new(&path).load(),
+        Err(ConfigError::Parse { .. })
+    ));
 
     fs::write(&path, format!(r#"{{"version":{}}}"#, CONFIG_VERSION + 1)).unwrap();
-    assert!(matches!(ConfigStore::new(&path).load(), Err(ConfigError::Invalid { .. })));
+    assert!(matches!(
+        ConfigStore::new(&path).load(),
+        Err(ConfigError::Invalid { .. })
+    ));
 }
 
 #[test]
@@ -100,7 +113,10 @@ fn oversized_file_is_rejected() {
     let dir = TempDir::new("oversized");
     let path = dir.0.join("berry.json");
     fs::write(&path, vec![b' '; 70 * 1024]).unwrap();
-    assert!(matches!(ConfigStore::new(&path).load(), Err(ConfigError::Invalid { .. })));
+    assert!(matches!(
+        ConfigStore::new(&path).load(),
+        Err(ConfigError::Invalid { .. })
+    ));
 }
 
 #[test]

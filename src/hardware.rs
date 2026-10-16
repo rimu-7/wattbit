@@ -85,7 +85,10 @@ impl Hardware {
         self.detection.charge_inhibit.ok_or_else(|| {
             HardwareError::Unsupported(format!(
                 "charge inhibit is not supported on this Mac: {}",
-                self.capabilities().charge_inhibit.reason().unwrap_or("unknown reason")
+                self.capabilities()
+                    .charge_inhibit
+                    .reason()
+                    .unwrap_or("unknown reason")
             ))
         })
     }
@@ -94,7 +97,10 @@ impl Hardware {
         self.detection.adapter.ok_or_else(|| {
             HardwareError::Unsupported(format!(
                 "adapter control is not supported on this Mac: {}",
-                self.capabilities().adapter_control.reason().unwrap_or("unknown reason")
+                self.capabilities()
+                    .adapter_control
+                    .reason()
+                    .unwrap_or("unknown reason")
             ))
         })
     }

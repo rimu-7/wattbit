@@ -9,7 +9,10 @@ fn all_calls() -> Vec<Call> {
     vec![
         Call::Status,
         Call::Doctor,
-        Call::SetLimit { upper: 80, lower: 75 },
+        Call::SetLimit {
+            upper: 80,
+            lower: 75,
+        },
         Call::DisableLimit,
         Call::SetAdapter { enabled: false },
         Call::SetOption {
@@ -42,14 +45,24 @@ fn every_call_has_a_registered_method() {
 
 #[test]
 fn wire_format_is_json_rpc() {
-    let value = serde_json::to_value(Request::new(7, Call::SetLimit { upper: 80, lower: 75 })).unwrap();
+    let value = serde_json::to_value(Request::new(
+        7,
+        Call::SetLimit {
+            upper: 80,
+            lower: 75,
+        },
+    ))
+    .unwrap();
     assert_eq!(
         value,
         json!({"jsonrpc": "2.0", "id": 7, "method": "set_limit", "params": {"upper": 80, "lower": 75}})
     );
 
     let value = serde_json::to_value(Request::new(1, Call::Status)).unwrap();
-    assert_eq!(value, json!({"jsonrpc": "2.0", "id": 1, "method": "status"}));
+    assert_eq!(
+        value,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "status"})
+    );
 
     let value = serde_json::to_value(Request::new(
         2,
@@ -64,7 +77,12 @@ fn wire_format_is_json_rpc() {
 
 #[test]
 fn responses_round_trip() {
-    let ok = Response::result(3, Reply::Ack { message: "done".into() });
+    let ok = Response::result(
+        3,
+        Reply::Ack {
+            message: "done".into(),
+        },
+    );
     let value = serde_json::to_value(&ok).unwrap();
     assert_eq!(
         value,
@@ -130,7 +148,13 @@ fn only_read_calls_are_unprivileged() {
 #[test]
 fn error_codes_follow_json_rpc_ranges() {
     use ErrorKind::*;
-    for kind in [ParseError, InvalidRequest, MethodNotFound, InvalidParams, Internal] {
+    for kind in [
+        ParseError,
+        InvalidRequest,
+        MethodNotFound,
+        InvalidParams,
+        Internal,
+    ] {
         assert!((-32768..=-32600).contains(&kind.code()), "{kind:?}");
     }
     for kind in [Unauthorized, Unsupported, Hardware, Timeout] {

@@ -169,10 +169,11 @@ impl ConfigStore {
                 reason: format!("file exceeds {MAX_CONFIG_BYTES} bytes"),
             });
         }
-        let config: Config = serde_json::from_slice(&contents).map_err(|source| ConfigError::Parse {
-            path: self.path.clone(),
-            source,
-        })?;
+        let config: Config =
+            serde_json::from_slice(&contents).map_err(|source| ConfigError::Parse {
+                path: self.path.clone(),
+                source,
+            })?;
         config.validate().map_err(|reason| ConfigError::Invalid {
             path: self.path.clone(),
             reason,
@@ -193,10 +194,12 @@ impl ConfigStore {
             Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
             _ => PathBuf::from("."),
         };
-        let file_name = self
-            .path
-            .file_name()
-            .ok_or_else(|| write_err(io::Error::new(io::ErrorKind::InvalidInput, "path has no file name")))?;
+        let file_name = self.path.file_name().ok_or_else(|| {
+            write_err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path has no file name",
+            ))
+        })?;
         let tmp = dir.join(format!(
             ".{}.tmp.{}",
             file_name.to_string_lossy(),

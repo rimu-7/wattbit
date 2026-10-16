@@ -198,16 +198,25 @@ impl RpcError {
 /// Decodes one request line. On failure, returns the error response to
 /// send back, carrying the request id when it can be recovered.
 pub fn decode_request(line: &[u8]) -> Result<Request, Box<Response>> {
-    let fail = |id, kind, message: String| Box::new(Response::error(id, RpcError::new(kind, message)));
+    let fail =
+        |id, kind, message: String| Box::new(Response::error(id, RpcError::new(kind, message)));
 
     let value: Value = serde_json::from_slice(line)
         .map_err(|e| fail(None, ErrorKind::ParseError, format!("invalid JSON: {e}")))?;
     let Some(object) = value.as_object() else {
-        return Err(fail(None, ErrorKind::InvalidRequest, "request must be a JSON object".into()));
+        return Err(fail(
+            None,
+            ErrorKind::InvalidRequest,
+            "request must be a JSON object".into(),
+        ));
     };
     let id = object.get("id").and_then(Value::as_u64);
     if object.get("jsonrpc").and_then(Value::as_str) != Some(JSONRPC_VERSION) {
-        return Err(fail(id, ErrorKind::InvalidRequest, "\"jsonrpc\" must be \"2.0\"".into()));
+        return Err(fail(
+            id,
+            ErrorKind::InvalidRequest,
+            "\"jsonrpc\" must be \"2.0\"".into(),
+        ));
     }
     if id.is_none() {
         return Err(fail(
@@ -218,10 +227,18 @@ pub fn decode_request(line: &[u8]) -> Result<Request, Box<Response>> {
     }
     match object.get("method").and_then(Value::as_str) {
         None => {
-            return Err(fail(id, ErrorKind::InvalidRequest, "\"method\" must be a string".into()))
+            return Err(fail(
+                id,
+                ErrorKind::InvalidRequest,
+                "\"method\" must be a string".into(),
+            ))
         }
         Some(method) if !METHODS.contains(&method) => {
-            return Err(fail(id, ErrorKind::MethodNotFound, format!("unknown method {method:?}")))
+            return Err(fail(
+                id,
+                ErrorKind::MethodNotFound,
+                format!("unknown method {method:?}"),
+            ))
         }
         Some(_) => {}
     }
