@@ -1,0 +1,36 @@
+[package]
+name = "berry"
+version = "0.1.0"
+edition = "2021"
+description = "Battery charge limiting, power adapter control and battery telemetry for macOS"
+readme = "README.md"
+keywords = ["macos", "battery", "smc", "iokit", "launchd"]
+categories = ["command-line-utilities", "hardware-support", "os::macos-apis"]
+publish = false
+
+[dependencies]
+anyhow = "1.0.86"
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2.155"
+serde = { version = "1.0.200", features = ["derive"] }
+serde_json = "1.0.120"
+thiserror = "2.0"
+tokio = { version = "1.40", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+mach2 = "0.4"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = "symbols"
