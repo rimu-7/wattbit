@@ -14,6 +14,7 @@ pub mod ffi;
 pub mod hardware;
 pub mod policy;
 pub mod power;
+pub mod protocol;
 pub mod smc;
 
 /// Default location of the daemon's Unix domain socket.
