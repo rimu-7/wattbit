@@ -3,10 +3,12 @@ use std::process::ExitCode;
 use anyhow::anyhow;
 use clap::Parser;
 
-use berry::cli::{Cli, Command, DaemonCommand, Switch, Toggle};
+use berry::cli::{Cli, Command, DaemonCommand, SpeedCommand, Switch, Toggle};
 use berry::client::{render_status, Client, ClientError};
 use berry::daemon::{self, DaemonOptions};
 use berry::protocol::{Call, ErrorKind, Reply};
+use berry::speed::agent::{AgentOptions, SpeedPaths};
+use berry::speed::{agent, render, status};
 use berry::{doctor, service};
 
 /// Exit status when the hardware does not support the request.
@@ -97,6 +99,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 ExitCode::SUCCESS
             })
         }
+        Command::Speed { command } => speed_command(command),
         Command::Daemon {
             command: DaemonCommand::Run { config, read_only },
         } => {
@@ -117,6 +120,43 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::UninstallService { purge } => {
             println!("{}", service::uninstall(purge)?);
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// Routes `berry speed`; none of it needs the daemon or root.
+fn speed_command(command: SpeedCommand) -> anyhow::Result<ExitCode> {
+    let paths = SpeedPaths::resolve()?;
+    match command {
+        SpeedCommand::On { no_launchd } => {
+            println!("{}", agent::on(&paths, no_launchd)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        SpeedCommand::Off => {
+            println!("{}", agent::off(&paths)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        SpeedCommand::Status { json } => {
+            let report = status::query(&paths);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", render::render(&report));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        SpeedCommand::Agent {
+            headless,
+            interval,
+            once,
+        } => {
+            if once {
+                let live = agent::sample_once(&paths, interval)?;
+                println!("{}", serde_json::to_string_pretty(&live)?);
+            } else {
+                agent::run(&paths, AgentOptions { interval, headless })?;
+            }
             Ok(ExitCode::SUCCESS)
         }
     }

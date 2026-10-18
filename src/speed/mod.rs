@@ -16,7 +16,9 @@ pub mod agent;
 pub mod date;
 pub mod format;
 pub mod menubar;
+pub mod render;
 pub mod sampler;
+pub mod status;
 pub mod store;
 
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::config::ConfigOption;
 use crate::policy::{Thresholds, DEFAULT_UPPER, MAX_UPPER, MIN_UPPER};
 use crate::protocol::Call;
+use crate::speed::agent::{DEFAULT_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS, MIN_INTERVAL_SECONDS};
 use crate::{CONFIG_PATH, SOCKET_PATH};
 
 #[derive(Debug, Parser)]
@@ -49,6 +50,11 @@ pub enum Command {
     },
     /// Run diagnostic checks on the hardware, daemon and configuration.
     Doctor,
+    /// Show live internet speeds in the menu bar and record usage by day.
+    Speed {
+        #[command(subcommand)]
+        command: SpeedCommand,
+    },
     /// Run or manage the daemon.
     Daemon {
         #[command(subcommand)]
@@ -75,6 +81,53 @@ pub enum DaemonCommand {
         #[arg(long)]
         read_only: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SpeedCommand {
+    /// Show the speed meter in the menu bar and start recording usage.
+    On {
+        /// Run the meter without installing a login item; it stops at logout.
+        #[arg(long)]
+        no_launchd: bool,
+    },
+    /// Hide the meter and stop recording usage.
+    Off,
+    /// Show current speeds and internet usage for the last 31 days.
+    Status {
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the sampling agent (this is what `berry speed on` starts).
+    #[command(hide = true)]
+    Agent {
+        /// Record usage without creating the menu bar item.
+        #[arg(long)]
+        headless: bool,
+        /// Seconds between samples.
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = DEFAULT_INTERVAL_SECONDS,
+            value_parser = parse_interval
+        )]
+        interval: f64,
+        /// Take one sample, save it and exit.
+        #[arg(long)]
+        once: bool,
+    },
+}
+
+/// Parses a sampling interval in seconds.
+pub fn parse_interval(text: &str) -> Result<f64, String> {
+    let range_error =
+        || format!("expected seconds from {MIN_INTERVAL_SECONDS} to {MAX_INTERVAL_SECONDS}");
+    let value: f64 = text.parse().map_err(|_| range_error())?;
+    if !(MIN_INTERVAL_SECONDS..=MAX_INTERVAL_SECONDS).contains(&value) {
+        return Err(range_error());
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Args)]
