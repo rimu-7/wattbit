@@ -38,6 +38,8 @@ pub struct Config {
     pub prevent_sleep_while_adapter_disabled: bool,
     pub allow_non_root_access: bool,
     pub control_magsafe_led: bool,
+    /// Automatically discharge to the limit on battery when current charge is above the upper limit.
+    pub discharge_to_limit: bool,
 }
 
 impl Default for Config {
@@ -53,6 +55,7 @@ impl Default for Config {
             prevent_sleep_while_adapter_disabled: false,
             allow_non_root_access: true,
             control_magsafe_led: false,
+            discharge_to_limit: true,
         }
     }
 }
@@ -75,6 +78,8 @@ pub enum ConfigOption {
     MagsafeLed,
     /// Hold the limit by bypassing the adapter when charge inhibit is unsupported.
     AdapterFallback,
+    /// Automatically discharge to the limit on battery when charge is above the limit.
+    DischargeToLimit,
 }
 
 impl Config {
@@ -87,6 +92,7 @@ impl Config {
             ConfigOption::AllowNonRoot => self.allow_non_root_access,
             ConfigOption::MagsafeLed => self.control_magsafe_led,
             ConfigOption::AdapterFallback => self.adapter_fallback,
+            ConfigOption::DischargeToLimit => self.discharge_to_limit,
         }
     }
 
@@ -101,6 +107,7 @@ impl Config {
             ConfigOption::AllowNonRoot => &mut self.allow_non_root_access,
             ConfigOption::MagsafeLed => &mut self.control_magsafe_led,
             ConfigOption::AdapterFallback => &mut self.adapter_fallback,
+            ConfigOption::DischargeToLimit => &mut self.discharge_to_limit,
         };
         *field = value;
     }

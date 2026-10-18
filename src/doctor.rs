@@ -199,6 +199,37 @@ pub async fn run(socket: &Path) -> Vec<Check> {
         checks.push(check(Level::Info, "Charge control mode", d.mode.label()));
     }
     checks.push(support_check("Charge inhibit", &caps.charge_inhibit, true));
+    match &caps.mcl {
+        Support::Supported => {
+            let limits = if !caps.mcl_available_limits.is_empty() {
+                format!(
+                    "supported ({})",
+                    caps.mcl_available_limits
+                        .iter()
+                        .map(|l| format!("{l}%"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                "supported".to_string()
+            };
+            checks.push(check(Level::Pass, "Native charge limit (MCL)", limits));
+        }
+        Support::Unverified { reason } => {
+            checks.push(check(
+                Level::Warn,
+                "Native charge limit (MCL)",
+                format!("unverified: {reason}"),
+            ));
+        }
+        Support::Unsupported { reason } => {
+            checks.push(check(
+                Level::Info,
+                "Native charge limit (MCL)",
+                format!("unsupported: {reason}"),
+            ));
+        }
+    }
     checks.push(support_check(
         "Firmware limit (BCLM)",
         &caps.firmware_limit,
@@ -366,16 +397,33 @@ fn conflict_checks(checks: &mut Vec<Check>, daemon: Option<&DaemonDiagnostics>) 
 }
 
 fn key_checks(checks: &mut Vec<Check>, local: &Capabilities, daemon: Option<&DaemonDiagnostics>) {
-    for probe in &local.keys {
-        let verified = daemon
-            .and_then(|d| d.capabilities.keys.iter().find(|k| k.key == probe.key))
-            .and_then(|k| k.writable);
+    for local_probe in &local.keys {
+        let daemon_probe = daemon.and_then(|d| {
+            d.capabilities
+                .keys
+                .iter()
+                .find(|k| k.key == local_probe.key)
+        });
+        let verified = daemon_probe.and_then(|k| k.writable);
+        // Some keys only root can read; the daemon's reading covers them,
+        // and its error is the accurate one when even root is refused.
+        let (probe, source) = match daemon_probe {
+            Some(d) if !local_probe.readable && d.readable => (d, " (read by daemon)"),
+            Some(d) if !local_probe.readable => (d, ""),
+            _ => (local_probe, ""),
+        };
         let name = format!("SMC key {}", probe.key);
         let item = if !probe.present {
             check(Level::Info, name, format!("absent ({})", probe.purpose))
         } else if !probe.readable {
+            // Nothing the user can fix when the root daemon is refused too.
+            let root_refused = daemon_probe.is_some_and(|d| !d.readable);
             check(
-                Level::Warn,
+                if root_refused {
+                    Level::Info
+                } else {
+                    Level::Warn
+                },
                 name,
                 format!(
                     "{}: {}",
@@ -397,7 +445,7 @@ fn key_checks(checks: &mut Vec<Check>, local: &Capabilities, daemon: Option<&Dae
                 },
                 name,
                 format!(
-                    "{}: readable, type {:?}, value [{}], {write}",
+                    "{}: readable{source}, type {:?}, value [{}], {write}",
                     probe.purpose,
                     probe.data_type.as_deref().unwrap_or("?"),
                     probe.value.as_deref().unwrap_or("")

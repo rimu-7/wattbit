@@ -18,6 +18,8 @@ fn capabilities() -> Capabilities {
         smc: Support::Supported,
         charge_inhibit: Support::Supported,
         charge_inhibit_control: Some("CH0B/CH0C".into()),
+        mcl: Support::unsupported("PowerUI not tested in mock"),
+        mcl_available_limits: vec![80, 85, 90, 95, 100],
         firmware_limit: Support::unsupported("SMC key BCLM is not present on this firmware"),
         adapter_control: Support::Supported,
         adapter_control_keys: Some("CH0I".into()),
@@ -179,6 +181,31 @@ fn unverified_and_fallback_are_distinguished() {
     let text = render_status(&report);
     assert!(text.contains("  Charge control mode: adapter fallback\n"));
     assert!(text.contains("  Power adapter control: ✔ (unverified)\n"));
+}
+
+#[test]
+fn fallback_explains_running_from_battery() {
+    let mut report = suppressed_report();
+    report.mode = ChargeControlMode::AdapterFallback;
+    report.charging.adapter_enabled = Some(false);
+    for state in [
+        ChargeState::ChargingSuppressed,
+        ChargeState::WaitingToResumeCharging,
+    ] {
+        report.charging.policy_state = Some(state);
+        let text = render_status(&report);
+        assert!(text.contains(
+            "    The charger is switched off, so your Mac runs from its battery until it drops \
+             below 75%.\n"
+        ));
+        assert!(text.contains("System Settings → Battery → Charging"));
+        assert!(!text.contains("Your Mac will not charge"));
+    }
+
+    report.charging.policy_state = Some(ChargeState::ChargingPermitted);
+    report.charging.charging_allowed = Some(true);
+    report.charging.adapter_enabled = Some(true);
+    assert!(!render_status(&report).contains("The charger is switched off"));
 }
 
 #[test]

@@ -153,6 +153,7 @@ fn unsupported_or_failed_writes_are_reported_not_faked() {
     let caps: serde_json::Value =
         serde_json::from_slice(&daemon.wattbit(&["status", "--json"]).stdout).unwrap();
     let native = caps["capabilities"]["charge_inhibit"]["status"] != "unsupported"
+        || caps["capabilities"]["mcl"]["status"] != "unsupported"
         || caps["capabilities"]["firmware_limit"]["status"] != "unsupported";
     let conflicted = caps["conflicts"]
         .as_array()

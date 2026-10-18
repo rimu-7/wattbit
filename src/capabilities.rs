@@ -61,6 +61,8 @@ impl Support {
 pub enum ChargeControlMode {
     /// SMC charge-inhibit keys, driven by wattbit's hysteresis loop.
     Native,
+    /// macOS native charge limit (MCL via PowerUI); firmware holds the limit and powers from the charger.
+    Mcl,
     /// Intel `BCLM` firmware ceiling; the firmware enforces the limit.
     FirmwareLimit,
     /// Adapter bypass used to hold the limit (opt-in, runs on battery).
@@ -72,6 +74,7 @@ impl ChargeControlMode {
     pub fn label(self) -> &'static str {
         match self {
             ChargeControlMode::Native => "native",
+            ChargeControlMode::Mcl => "native limit (macOS MCL)",
             ChargeControlMode::FirmwareLimit => "firmware limit (BCLM)",
             ChargeControlMode::AdapterFallback => "adapter fallback",
             ChargeControlMode::Unsupported => "unsupported",
@@ -112,6 +115,8 @@ pub struct Capabilities {
     pub charge_inhibit: Support,
     /// Name of the selected charge-inhibit control, e.g. `CH0B/CH0C`.
     pub charge_inhibit_control: Option<String>,
+    pub mcl: Support,
+    pub mcl_available_limits: Vec<u8>,
     pub firmware_limit: Support,
     pub adapter_control: Support,
     pub adapter_control_keys: Option<String>,
@@ -127,6 +132,8 @@ impl Capabilities {
     pub fn charge_control_mode(&self, adapter_fallback: bool) -> ChargeControlMode {
         if self.charge_inhibit.is_usable() {
             ChargeControlMode::Native
+        } else if self.mcl.is_usable() {
+            ChargeControlMode::Mcl
         } else if self.firmware_limit.is_usable() {
             ChargeControlMode::FirmwareLimit
         } else if adapter_fallback && self.adapter_control.is_usable() {
@@ -143,6 +150,7 @@ pub struct Detection {
     pub capabilities: Capabilities,
     pub charge_inhibit: Option<&'static BinaryControl>,
     pub adapter: Option<&'static BinaryControl>,
+    pub mcl: Option<crate::mcl::Mcl>,
 }
 
 /// Probes the SMC. Pass `verify_writes = true` only when running as root.
@@ -150,6 +158,14 @@ pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
     let host = host_info();
     let calibration = Support::unsupported("wattbit does not implement automatic calibration");
     let sleep_hooks = Support::unverified("sleep hooks are registered by the daemon");
+
+    let (mcl_obj, mcl_support, mcl_limits) = match crate::mcl::Mcl::open() {
+        Ok(m) => {
+            let limits = m.available_limits().to_vec();
+            (Some(m), Support::Supported, limits)
+        }
+        Err(e) => (None, Support::unsupported(e.to_string()), Vec::new()),
+    };
 
     let smc = match smc {
         Ok(smc) => smc,
@@ -161,6 +177,8 @@ pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
                     smc: Support::unsupported(reason.clone()),
                     charge_inhibit: Support::unsupported(reason.clone()),
                     charge_inhibit_control: None,
+                    mcl: mcl_support,
+                    mcl_available_limits: mcl_limits,
                     firmware_limit: Support::unsupported(reason.clone()),
                     adapter_control: Support::unsupported(reason.clone()),
                     adapter_control_keys: None,
@@ -172,6 +190,7 @@ pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
                 },
                 charge_inhibit: None,
                 adapter: None,
+                mcl: mcl_obj,
             };
         }
     };
@@ -188,6 +207,8 @@ pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
             smc: Support::Supported,
             charge_inhibit: charge_support,
             charge_inhibit_control: charge_inhibit.map(|c| c.name.to_owned()),
+            mcl: mcl_support,
+            mcl_available_limits: mcl_limits,
             firmware_limit,
             adapter_control: adapter_support,
             adapter_control_keys: adapter.map(|c| c.name.to_owned()),
@@ -199,6 +220,7 @@ pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
         },
         charge_inhibit,
         adapter,
+        mcl: mcl_obj,
     }
 }
 
@@ -444,7 +466,7 @@ fn sysctl_string(name: &CStr) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn caps(charge: Support, bclm: Support, adapter: Support) -> Capabilities {
+    fn caps_with_mcl(charge: Support, mcl: Support, bclm: Support, adapter: Support) -> Capabilities {
         Capabilities {
             host: HostInfo {
                 arch: "arm64 (Apple Silicon)".into(),
@@ -456,6 +478,8 @@ mod tests {
             smc: Support::Supported,
             charge_inhibit: charge,
             charge_inhibit_control: None,
+            mcl,
+            mcl_available_limits: vec![80, 85, 90, 95, 100],
             firmware_limit: bclm,
             adapter_control: adapter,
             adapter_control_keys: None,
@@ -468,25 +492,28 @@ mod tests {
     }
 
     #[test]
-    fn mode_prefers_native_then_firmware_then_fallback() {
+    fn mode_prefers_native_then_mcl_then_firmware_then_fallback() {
         let no = || Support::unsupported("absent");
-        let c = caps(Support::Supported, Support::Supported, Support::Supported);
+        let c = caps_with_mcl(Support::Supported, Support::Supported, Support::Supported, Support::Supported);
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Native);
 
-        let c = caps(no(), Support::Supported, Support::Supported);
+        let c = caps_with_mcl(no(), Support::Supported, Support::Supported, Support::Supported);
+        assert_eq!(c.charge_control_mode(true), ChargeControlMode::Mcl);
+
+        let c = caps_with_mcl(no(), no(), Support::Supported, Support::Supported);
         assert_eq!(
             c.charge_control_mode(true),
             ChargeControlMode::FirmwareLimit
         );
 
-        let c = caps(no(), no(), Support::Supported);
+        let c = caps_with_mcl(no(), no(), no(), Support::Supported);
         assert_eq!(c.charge_control_mode(false), ChargeControlMode::Unsupported);
         assert_eq!(
             c.charge_control_mode(true),
             ChargeControlMode::AdapterFallback
         );
 
-        let c = caps(no(), no(), no());
+        let c = caps_with_mcl(no(), no(), no(), no());
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Unsupported);
     }
 

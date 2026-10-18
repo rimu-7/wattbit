@@ -88,6 +88,12 @@ pub const BCLM: FourCC = FourCC::new(b"BCLM");
 pub const ACLC: FourCC = FourCC::new(b"ACLC");
 /// AC input indicator; probed for diagnostics only, never written.
 pub const ACIN: FourCC = FourCC::new(b"ACIN");
+/// Protected charge key on macOS 27 firmware; probed for diagnostics only,
+/// never written.
+pub const CH0J: FourCC = FourCC::new(b"CH0J");
+/// Protected charge key on macOS 27 firmware; probed for diagnostics only,
+/// never written.
+pub const CHLS: FourCC = FourCC::new(b"CHLS");
 
 /// A two-state hardware control implemented by writing fixed byte patterns
 /// to one or more SMC keys. All keys of a control are always written
@@ -229,5 +235,13 @@ pub const KNOWN_KEYS: &[KeyDescriptor] = &[
     KeyDescriptor {
         key: ACIN,
         purpose: "AC input indicator (diagnostic only)",
+    },
+    KeyDescriptor {
+        key: CH0J,
+        purpose: "charge control (macOS 27 firmware, diagnostic only)",
+    },
+    KeyDescriptor {
+        key: CHLS,
+        purpose: "charge limit state (macOS 27 firmware, diagnostic only)",
     },
 ];

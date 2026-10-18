@@ -118,11 +118,15 @@ pub const KNOWN_TOOLS: &[KnownTool] = &[
     },
     KnownTool {
         name: "battery (actuallymentor)",
+        // Its installer also grants passwordless sudo in /etc/sudoers.d.
         remedy: "launchctl bootout gui/$(id -u)/com.battery.app; pkill -f co.palokaj.battery; \
-                 rm -f ~/Library/LaunchAgents/battery.plist",
+                 rm -rf ~/Library/LaunchAgents/battery.plist ~/.battery; \
+                 sudo rm -rf /usr/local/co.palokaj.battery /usr/local/bin/battery \
+                 /etc/sudoers.d/battery",
         installed: &[
             "~/Library/LaunchAgents/battery.plist",
             "/usr/local/co.palokaj.battery",
+            "/etc/sudoers.d/battery",
         ],
         matches: is_battery_cli,
     },

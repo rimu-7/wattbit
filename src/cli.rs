@@ -132,18 +132,13 @@ pub fn parse_interval(text: &str) -> Result<f64, String> {
 
 #[derive(Debug, Args)]
 pub struct LimitArgs {
-    /// Upper limit in percent (50-100), or `disable`.
+    /// Upper limit in percent (50-100), or `disable` / `off`.
     #[arg(
         value_name = "PERCENT|disable",
         value_parser = parse_limit_target,
         default_value_t = LimitTarget::Percent(DEFAULT_UPPER)
     )]
     pub target: LimitTarget,
-
-    /// Lower limit in percent; charging resumes below it. Defaults to five
-    /// below the upper limit.
-    #[arg(long, value_name = "PERCENT")]
-    pub lower: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,9 +156,9 @@ impl std::fmt::Display for LimitTarget {
     }
 }
 
-/// Parses `80`, `80%` or `disable`.
+/// Parses `80`, `80%`, `disable` or `off`.
 pub fn parse_limit_target(text: &str) -> Result<LimitTarget, String> {
-    if text.eq_ignore_ascii_case("disable") {
+    if text.eq_ignore_ascii_case("disable") || text.eq_ignore_ascii_case("off") {
         return Ok(LimitTarget::Disable);
     }
     let range_error =
@@ -186,11 +181,8 @@ pub enum LimitRequest {
 impl LimitArgs {
     pub fn resolve(&self) -> Result<LimitRequest, String> {
         match self.target {
-            LimitTarget::Disable if self.lower.is_some() => {
-                Err("--lower cannot be combined with `disable`".into())
-            }
             LimitTarget::Disable => Ok(LimitRequest::Disable),
-            LimitTarget::Percent(upper) => Thresholds::new(upper, self.lower)
+            LimitTarget::Percent(upper) => Thresholds::new(upper, None)
                 .map(LimitRequest::Set)
                 .map_err(|e| e.to_string()),
         }

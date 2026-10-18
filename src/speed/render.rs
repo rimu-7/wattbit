@@ -229,14 +229,14 @@ mod tests {
             usage: None,
             warning: None,
             update: Some(crate::update::UpdateNotice {
-                current: "0.2.0".into(),
-                latest: "0.3.0".into(),
+                current: "0.3.0".into(),
+                latest: "0.4.0".into(),
                 command: crate::update::INSTALL_COMMAND.into(),
             }),
         };
         let text = render(&status);
         assert!(text.ends_with(&format!(
-            "\nUpdate available: wattbit 0.3.0 (you have 0.2.0). To update, run:\n  {}\n",
+            "\nUpdate available: wattbit 0.4.0 (you have 0.3.0). To update, run:\n  {}\n",
             crate::update::INSTALL_COMMAND
         )));
     }

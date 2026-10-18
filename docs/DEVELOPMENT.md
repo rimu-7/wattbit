@@ -46,9 +46,10 @@ src/
 │   └── controller.rs  policy evaluation and hardware reconciliation
 ├── policy.rs          limits and the charging state machine
 ├── config.rs          atomic settings file
-├── capabilities.rs    SMC key probing and the feature table
+├── capabilities.rs    SMC key probing, native MCL detection and the feature table
 ├── conflicts.rs       detection of other battery apps
-├── hardware.rs        verified charge, adapter, LED and BCLM control
+├── hardware.rs        verified charge, adapter, MCL, LED and BCLM control
+├── mcl.rs             Apple Silicon native Manual Charge Limit via PowerUI
 ├── smc/
 │   ├── mod.rs         AppleSMC driver (IOConnectCallStructMethod)
 │   └── keys.rs        key names and the exact bytes written to each
@@ -67,10 +68,11 @@ install.sh             the one-line installer and updater
 
 wattbit is one binary with two roles:
 
-- **`wattbitd`**, the root LaunchDaemon (`com.wattbit.daemon`), is the only
-  part that touches the SMC. It serves requests on `/var/run/wattbit.sock`,
-  re-evaluates the policy on every power-source notification and every
-  30 seconds, and restores factory charging when it stops.
+- **`wattbitd`**, the root LaunchDaemon (`com.wattbit.daemon`), manages
+  charging hardware. It communicates with the SMC and Apple's native
+  PowerUI subsystem, serves requests on `/var/run/wattbit.sock`,
+  re-evaluates policy on power-source notifications and every 30 seconds,
+  and restores factory charging when stopped.
 - **The speed agent** (`com.wattbit.speed`) is a per-user LaunchAgent that
   owns the menu bar item. It never needs root and never talks to the daemon.
 

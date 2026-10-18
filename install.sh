@@ -147,7 +147,7 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --version)
-        [ $# -ge 2 ] || die "--version needs a value, for example --version 0.2.0"
+        [ $# -ge 2 ] || die "--version needs a value, for example --version 0.3.0"
         VERSION="$2"
         shift
         ;;
@@ -225,12 +225,69 @@ main() {
   sudo "$BIN" install-service </dev/null ||
     die "installing the battery service failed; see the message above."
 
-  if [ "$NO_SPEED" = 1 ]; then
-    say "${DIM}    Leaving the speed meter as it is (--no-speed).${RESET}"
+  # Detect controlling terminal for interactive configuration (even when piped via curl | bash)
+  TTY=""
+  if [ -r /dev/tty ]; then
+    TTY="/dev/tty"
+  elif [ -t 0 ]; then
+    TTY="/dev/stdin"
+  fi
+
+  WANT_LIMIT=""
+  WANT_SPEED=""
+
+  if [ -n "$TTY" ]; then
+    say ""
+    step "Configuration"
+
+    printf "  Set battery charge limit percentage [80/85/90/100, or 'disable'] (default: 80): "
+    read -r CHOSEN_LIMIT < "$TTY" || CHOSEN_LIMIT=""
+    CHOSEN_LIMIT="$(echo "$CHOSEN_LIMIT" | tr -d '[:space:]')"
+    case "$CHOSEN_LIMIT" in
+      '' | 80 | 80%) WANT_LIMIT="80" ;;
+      disable | off | DISABLE | OFF) WANT_LIMIT="disable" ;;
+      5[0-9] | 6[0-9] | 7[0-9] | 8[0-9] | 9[0-9] | 100 | *%) WANT_LIMIT="${CHOSEN_LIMIT%\%}" ;;
+      *)
+        warn "unrecognized limit '$CHOSEN_LIMIT'; defaulting to 80%"
+        WANT_LIMIT="80"
+        ;;
+    esac
+
+    if [ "$NO_SPEED" != 1 ]; then
+      printf "  Enable internet speed meter in menu bar? [Y/n] (default: Y): "
+      read -r CHOSEN_SPEED < "$TTY" || CHOSEN_SPEED=""
+      CHOSEN_SPEED="$(echo "$CHOSEN_SPEED" | tr -d '[:space:]')"
+      case "$CHOSEN_SPEED" in
+        '' | [yY] | [yY][eE][sS]) WANT_SPEED=1 ;;
+        [nN] | [nN][oO] | off | OFF) WANT_SPEED=0 ;;
+        *) WANT_SPEED=1 ;;
+      esac
+    else
+      WANT_SPEED=0
+    fi
   else
+    # Non-interactive mode (CI or piped without tty)
+    if [ -z "$OLD" ]; then
+      WANT_LIMIT="80"
+      WANT_SPEED=$([ "$NO_SPEED" = 1 ] && echo 0 || echo 1)
+    fi
+  fi
+
+  # Apply charge limit if specified
+  if [ -n "$WANT_LIMIT" ]; then
+    step "Applying charge limit ($WANT_LIMIT)"
+    sudo "$INSTALLED" limit "$WANT_LIMIT" </dev/null 2>/dev/null || true
+  fi
+
+  # Start or stop speed meter
+  if [ "$WANT_SPEED" = 1 ]; then
     step "Starting the speed meter"
     "$INSTALLED" speed on </dev/null ||
       warn "the speed meter did not start. Run \`wattbit speed on\` once you are logged in at the Mac."
+  elif [ "$WANT_SPEED" = 0 ] && [ "$NO_SPEED" != 1 ]; then
+    "$INSTALLED" speed off </dev/null 2>/dev/null || true
+  elif [ "$NO_SPEED" = 1 ]; then
+    say "${DIM}    Leaving the speed meter as it is (--no-speed).${RESET}"
   fi
 
   WATTBIT="wattbit"
@@ -246,12 +303,16 @@ main() {
     say "${BOLD}wattbit $NEW is installed.${RESET}"
   fi
   say ""
-  say "  $WATTBIT status              battery, charging and settings"
-  say "  sudo $WATTBIT limit 80       stop charging at 80% (resumes below 75%)"
-  say "  $WATTBIT speed status        live speed and 31 days of internet usage"
-  say "  $WATTBIT doctor              check that everything works"
+  say "${BOLD}Core Commands:${RESET}"
+  say "  sudo $WATTBIT limit <PERCENT>   set charge limit (e.g. 80, 85, 90)"
+  say "  sudo $WATTBIT limit disable     disable limit (charge to 100%)"
+  say "  $WATTBIT status                 charging, battery & settings overview"
+  say "  $WATTBIT doctor                 run system & hardware diagnostics"
+  say "  $WATTBIT speed on               enable menu bar speed meter"
+  say "  $WATTBIT speed off              disable menu bar speed meter"
+  say "  $WATTBIT speed status           view speed and 31-day data usage"
   say ""
-  say "  Update later by running the same command you installed with."
+  say "  Update anytime by re-running the install command."
 }
 
 main "$@"

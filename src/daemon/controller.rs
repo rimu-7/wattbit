@@ -92,6 +92,8 @@ struct State {
     owns_inhibit: bool,
     /// wattbit itself bypassed the adapter, as opposed to another tool.
     owns_adapter_cut: bool,
+    /// wattbit itself set the native charge limit.
+    owns_mcl: bool,
 }
 
 #[derive(Debug)]
@@ -136,6 +138,7 @@ impl Controller {
                 conflicts: Vec::new(),
                 owns_inhibit: false,
                 owns_adapter_cut: false,
+                owns_mcl: false,
             }),
         }
     }
@@ -277,6 +280,72 @@ impl Controller {
         }
     }
 
+    async fn ensure_mcl(
+        &self,
+        target: Option<u8>,
+        may_write: bool,
+        errors: &mut Vec<String>,
+    ) -> Option<u8> {
+        if self.read_only {
+            errors.push(format!("MCL: {}", ControlError::ReadOnly("MCL")));
+            return None;
+        }
+        let (current_enabled, current_limit) = match self
+            .hw(|hw| {
+                let enabled = hw.is_mcl_enabled()?;
+                let limit = hw.mcl_limit()?;
+                Ok((enabled, limit))
+            })
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                errors.push(format!("MCL: {e}"));
+                return None;
+            }
+        };
+
+        match target {
+            Some(wanted) => {
+                let snapped = match self.hw(move |hw| Ok(hw.mcl()?.snap_limit(wanted))).await {
+                    Ok(s) => s,
+                    _ => wanted,
+                };
+                if (current_enabled && current_limit == snapped) || !may_write {
+                    return Some(if current_enabled { current_limit } else { 100 });
+                }
+                match self
+                    .write("MCL", move |hw| hw.set_mcl_limit(snapped))
+                    .await
+                {
+                    Ok(()) => {
+                        log!("native charge limit set to {snapped}%");
+                        Some(snapped)
+                    }
+                    Err(e) => {
+                        errors.push(format!("MCL: {e}"));
+                        Some(current_limit)
+                    }
+                }
+            }
+            None => {
+                if !current_enabled || !may_write {
+                    return Some(100);
+                }
+                match self.write("MCL", |hw| hw.disable_mcl()).await {
+                    Ok(()) => {
+                        log!("native charge limit disabled");
+                        Some(100)
+                    }
+                    Err(e) => {
+                        errors.push(format!("MCL: {e}"));
+                        Some(current_limit)
+                    }
+                }
+            }
+        }
+    }
+
     /// Re-scans for other charge limiters, logging when the set changes.
     async fn refresh_conflicts(&self, st: &mut State) {
         let scan = tokio::time::timeout(
@@ -401,6 +470,26 @@ impl Controller {
                 }
                 st.charging_allowed = state.map(|inhibited| !inhibited);
             }
+            ChargeControlMode::Mcl => {
+                let target = if limit_active {
+                    Some(st.config.charge_limit.map_or(80, Thresholds::upper))
+                } else {
+                    None
+                };
+                if let Some(limit) = self
+                    .ensure_mcl(target, may_write, &mut errors)
+                    .await
+                {
+                    if may_write {
+                        st.owns_mcl = target.is_some();
+                    }
+                    if target.is_some() {
+                        st.charging_allowed = charge.map(|c| c < limit);
+                    } else {
+                        st.charging_allowed = Some(true);
+                    }
+                }
+            }
             ChargeControlMode::FirmwareLimit => {
                 let target = st.config.charge_limit.map_or(BCLM_MAX, Thresholds::upper);
                 if let Some(limit) = self
@@ -426,6 +515,16 @@ impl Controller {
             if mode == ChargeControlMode::AdapterFallback
                 && limit_active
                 && !policy_allows
+                && !st.asleep
+            {
+                want_enabled = false;
+            }
+            // If current charge is above the target limit, discharge on battery until the limit is reached.
+            let target_limit = st.config.charge_limit.map(Thresholds::upper);
+            if (mode == ChargeControlMode::Mcl || mode == ChargeControlMode::Native)
+                && limit_active
+                && st.config.discharge_to_limit
+                && charge.is_some_and(|c| target_limit.is_some_and(|t| c > t))
                 && !st.asleep
             {
                 want_enabled = false;
@@ -545,6 +644,9 @@ impl Controller {
         if self.caps.charge_inhibit.is_usable() && (!foreign || st.owns_inhibit) {
             self.ensure_charge_inhibit(false, true, &mut errors).await;
         }
+        if self.caps.mcl.is_usable() && (!foreign || st.owns_mcl) {
+            self.ensure_mcl(None, true, &mut errors).await;
+        }
         if self.caps.adapter_control.is_usable() && (!foreign || st.owns_adapter_cut) {
             self.ensure_adapter(true, true, &mut errors).await;
         }
@@ -663,8 +765,6 @@ impl Controller {
     }
 
     async fn set_limit(&self, upper: u8, lower: u8) -> Result<Reply, RpcError> {
-        let thresholds = Thresholds::new(upper, Some(lower))
-            .map_err(|e| RpcError::new(ErrorKind::InvalidParams, e.to_string()))?;
         let mut st = self.state.lock().await;
         let mode = self.caps.charge_control_mode(st.config.adapter_fallback);
         if mode == ChargeControlMode::Unsupported {
@@ -673,25 +773,72 @@ impl Controller {
                 self.unsupported_limit_reason(),
             ));
         }
+        let mut actual_upper = upper;
+        let mut note = None;
+        if mode == ChargeControlMode::Mcl {
+            if let Ok(snapped) = self.hw(move |hw| Ok(hw.mcl()?.snap_limit(upper))).await {
+                if snapped != upper {
+                    note = Some(format!(
+                        " (adjusted from {upper}% to macOS native limit {snapped}%)"
+                    ));
+                    actual_upper = snapped;
+                }
+            }
+        }
+        let actual_lower = lower.min(actual_upper.saturating_sub(1));
+        let thresholds = Thresholds::new(actual_upper, Some(actual_lower))
+            .map_err(|e| RpcError::new(ErrorKind::InvalidParams, e.to_string()))?;
         self.refresh_conflicts(&mut st).await;
         Self::conflict_error(&st)?;
         let mut next = st.config.clone();
         next.charge_limit = Some(thresholds);
         self.commit(&mut st, next)?;
-        log!("charge limit set to {upper}% / {lower}%");
+        log!("charge limit set to {actual_upper}% / {actual_lower}%");
         self.reconcile_locked(&mut st).await;
         Self::applied(&st, "the charge limit")?;
         let mut message = format!(
-            "Charge limit set: charging stops at {upper}% and resumes below {lower}% ({} mode).",
+            "Charge limit set: charging stops at {actual_upper}% and resumes below {actual_lower}% ({} mode).",
             mode.label()
         );
+        if let Some(n) = note {
+            message.push_str(&n);
+        }
         match mode {
             ChargeControlMode::FirmwareLimit => message.push_str(
                 " The firmware enforces the upper limit; the lower limit is not used in this mode.",
             ),
-            ChargeControlMode::AdapterFallback => {
-                message.push_str(" The Mac runs from its battery while the limit is held.")
+            ChargeControlMode::Mcl => {
+                if let Some(c) = st.battery.as_ref().map(|b| b.charge_percent) {
+                    if c > actual_upper && st.config.discharge_to_limit {
+                        message.push_str(&format!(
+                            " Battery is at {c}%: discharging on battery until {actual_upper}%, then holding on charger power."
+                        ));
+                    } else {
+                        message.push_str(
+                            " The system powers directly from the charger while battery charging is stopped (zero battery cycling).",
+                        );
+                    }
+                } else {
+                    message.push_str(
+                        " The system powers directly from the charger while battery charging is stopped (zero battery cycling).",
+                    );
+                }
             }
+            ChargeControlMode::Native => {
+                if let Some(c) = st.battery.as_ref().map(|b| b.charge_percent) {
+                    if c > actual_upper && st.config.discharge_to_limit {
+                        message.push_str(&format!(
+                            " Battery is at {c}%: discharging on battery until {actual_upper}%, then holding at limit."
+                        ));
+                    }
+                }
+            }
+            ChargeControlMode::AdapterFallback => message.push_str(&format!(
+                " This Mac cannot pause charging, so at {actual_upper}% wattbit switches the charger \
+                 off and the Mac runs from its battery until it drops below {actual_lower}%. To hold \
+                 the charge while running from the cable instead, disable this limit and use \
+                 System Settings → Battery → Charging."
+            )),
             _ => {}
         }
         Ok(Reply::Ack { message })
@@ -768,7 +915,7 @@ impl Controller {
         if enabled {
             let required = match option {
                 ConfigOption::MagsafeLed => Some(("MagSafe LED control", &self.caps.magsafe_led)),
-                ConfigOption::AdapterFallback => {
+                ConfigOption::AdapterFallback | ConfigOption::DischargeToLimit => {
                     Some(("adapter control", &self.caps.adapter_control))
                 }
                 _ => None,
@@ -817,6 +964,7 @@ fn option_label(option: ConfigOption) -> &'static str {
         ConfigOption::AllowNonRoot => "Non-root daemon access",
         ConfigOption::MagsafeLed => "MagSafe LED control",
         ConfigOption::AdapterFallback => "Adapter fallback charge limiting",
+        ConfigOption::DischargeToLimit => "Discharge to limit when above threshold",
     }
 }
 

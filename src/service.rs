@@ -294,7 +294,17 @@ pub fn install() -> anyhow::Result<String> {
     // A previous `launchctl disable` would make bootstrap fail.
     launchctl_checked(&["enable", &target])?;
     bootstrap("system", PLIST_PATH)?;
+    let _ = launchctl(&["kickstart", "-k", &target]);
     let daemon = wait_for_daemon(DAEMON_READY_TIMEOUT)?;
+
+    // If installed via sudo from a user session that had the speed meter running,
+    // kickstart the speed agent so it immediately runs the updated binary.
+    if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+        let speed_target = format!("gui/{sudo_uid}/com.wattbit.speed");
+        if loaded(&speed_target).unwrap_or(false) {
+            let _ = launchctl(&["kickstart", "-k", &speed_target]);
+        }
+    }
 
     let mut summary = format!(
         "wattbit {} is installed and its daemon is running (pid {}).\n\

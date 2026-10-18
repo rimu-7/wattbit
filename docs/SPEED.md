@@ -82,7 +82,7 @@ menu bar, just left of the system icons:
   section:
 
   ```text
-  ⚠️ Update available: wattbit 0.3.0 (you have 0.2.0)
+  ⚠️ Update available: wattbit 0.4.0 (you have 0.3.0)
   Run this in Terminal to update:
       curl -fsSL https://raw.githubusercontent.com/rimu-7/wattbit/main/install.sh | bash
   Copy Update Command

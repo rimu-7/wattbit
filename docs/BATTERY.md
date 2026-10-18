@@ -26,14 +26,15 @@ any it finds, with the exact command that removes each one.
 ## Setting a limit
 
 ```sh
-sudo wattbit limit 80              # stop at 80%, resume below 75%
-sudo wattbit limit 85 --lower 60   # stop at 85%, resume below 60%
-sudo wattbit limit disable         # charge normally again
+sudo wattbit limit 80              # stop at 80% (resumes below 75%)
+sudo wattbit limit 85              # stop at 85%
+sudo wattbit limit disable         # charge normally again (to 100%)
 ```
 
-The upper limit can be 50–100%. Unless you set `--lower`, charging resumes
-5% below the limit. The gap stops charging from switching on and off at
-every 1% change. The limit is saved and survives restarts.
+The limit percentage can be 50–100% (or `disable`/`off`). In legacy SMC modes,
+charging resumes 5% below the limit automatically with built-in hysteresis.
+In native MCL mode (macOS 15+), macOS holds the ceiling on AC power with zero
+battery cycling. The limit is saved and survives restarts.
 
 ## Reading `wattbit status`
 
@@ -73,7 +74,8 @@ Hardware compatibility:
 
 | Charge control mode | Meaning |
 | --- | --- |
-| `native` | The hardware stops charging at the limit |
+| `native` | Legacy SMC charge-inhibit keys (`CH0B`/`CH0C`/`CHTE`) |
+| `native limit (macOS MCL)` | Native macOS Manual Charge Limit via PowerUI (Apple Silicon); powers from charger, zero battery cycling |
 | `firmware limit (BCLM)` | Intel firmware enforces the upper limit itself |
 | `adapter fallback` | wattbit switches the charger off at the limit |
 | `unsupported` | This Mac can't hold a limit; see the next section |
@@ -82,25 +84,29 @@ Hardware compatibility:
 
 ## If your Mac can't stop charging
 
-On macOS 27, Apple removed the charge-control switch that charge-limit apps
-use, at least on the Macs tested so far. Then `sudo wattbit limit 80`
-replies *"this Mac exposes no usable charge-inhibit control"*. Choose **one**
-of these:
+On modern Apple Silicon Macs running macOS 15+ (Sequoia), Apple deprecated
+legacy raw SMC keys (`CH0B`, `CH0C`, `CHTE`) and introduced native Manual Charge Limit
+(MCL) through the `PowerUI` subsystem. wattbit automatically detects and uses
+`native limit (macOS MCL)` mode on these Macs:
 
-- **Apple's built-in limit (recommended).** macOS 26.4 and later have one in
-  **System Settings → Battery → Charging**. Leave wattbit's limit disabled.
-- **wattbit's adapter fallback.** wattbit holds the limit by switching the
-  charger off and on:
+- **Zero battery cycling**: When the limit (e.g. 80%) is reached, the system draws
+  all power directly from the charger (`Now drawing from 'AC Power'`) while battery
+  charging is paused (`IPDChargingAllowed = 0`). The battery does not drain or cycle.
+- **Discrete native limits**: Supported native limits are 80%, 85%, 90%, 95%, and 100%.
+  If a custom percentage is specified, wattbit snaps it to the closest supported native threshold.
 
-  ```sh
-  sudo wattbit set adapter-fallback on
-  sudo wattbit limit 80
-  ```
+On older Macs lacking both SMC inhibit keys and MCL support, wattbit offers
+**adapter fallback**:
 
-  At 80% the charger is switched off and the Mac runs from its battery while
-  still plugged in. Below 75% the charger comes back on. The battery cycles
-  between the two limits, which adds a little wear. That's why the fallback
-  is off by default.
+```sh
+sudo wattbit set adapter-fallback on
+sudo wattbit limit 80
+```
+
+At 80% the charger is switched off and the Mac runs from its battery while
+still plugged in. Below 75% the charger comes back on. The battery cycles
+between the two limits, which adds a little wear. That's why the fallback
+is off by default.
 
 ## Settings
 
@@ -115,6 +121,7 @@ Change a setting with `sudo wattbit set SETTING on|off`.
 | `adapter-fallback` | off | Holds the limit by switching the charger off; see [above](#if-your-mac-cant-stop-charging) |
 | `magsafe-led` | off | MagSafe light shows green while the limit holds and orange while charging |
 | `allow-non-root` | on | Lets any user run `wattbit status` and `wattbit doctor` |
+| `discharge-to-limit` | on | Automatically discharges on battery down to the limit when current charge is above it |
 
 ## Running on battery while plugged in
 
@@ -142,6 +149,7 @@ Each line starts with ✔ (working), • (information), ! (worth knowing) or
 | `! Firmware limit (BCLM): unsupported` | Normal on Apple Silicon; nothing to do |
 | `! MagSafe LED control: unverified` | Nothing; it's tested the next time macOS controls the light |
 | `• SMC key …: absent` | That key doesn't exist on your Mac; nothing to do |
+| `• SMC key CH0J` / `CHLS`: refuses access even as root | macOS 27 reserves these for Apple's own software; nothing to do. wattbit never writes them |
 
 ## How it works
 
@@ -156,7 +164,8 @@ and tests it before using it:
 
 | Mode | Used on |
 | --- | --- |
-| `native` | Apple Silicon and T2 Intel Macs that expose a charge-inhibit control |
+| `native` | Apple Silicon and T2 Intel Macs that expose legacy charge-inhibit SMC keys |
+| `native limit (macOS MCL)` | Modern Apple Silicon Macs (macOS 15+) via PowerUI (powers from charger, zero battery cycling) |
 | `firmware limit (BCLM)` | Intel Macs whose firmware has a charge ceiling |
 | `adapter fallback` | Any Mac with charger control, once you turn it on |
 

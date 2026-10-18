@@ -20,6 +20,7 @@ pub mod doctor;
 pub mod ffi;
 pub mod hardware;
 pub mod legacy;
+pub mod mcl;
 pub mod policy;
 pub mod power;
 pub mod protocol;

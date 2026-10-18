@@ -132,6 +132,11 @@ pub enum SmcError {
     /// few keys the SMC protects (for example `CH0J` on macOS 27).
     #[error("access to this SMC key requires root privileges")]
     NotPrivileged,
+    /// Access was refused even though the caller is root: the key is
+    /// reserved for Apple's own software (for example `CH0J` and `CHLS` on
+    /// macOS 27).
+    #[error("the SMC refuses access to this key even as root; macOS reserves it for Apple's own software")]
+    Restricted,
     #[error("AppleSMC call for key {key} failed: {}", io(.code))]
     Call { key: FourCC, code: ffi::IOReturn },
     #[error("SMC rejected {op} of key {key} with result code {code:#04x}")]
@@ -227,7 +232,13 @@ impl Smc {
         match kr {
             ffi::kIOReturnSuccess => {}
             ffi::kIOReturnNotPrivileged | ffi::kIOReturnNotPermitted => {
-                return Err(SmcError::NotPrivileged)
+                // SAFETY: geteuid has no preconditions.
+                let root = unsafe { libc::geteuid() } == 0;
+                return Err(if root {
+                    SmcError::Restricted
+                } else {
+                    SmcError::NotPrivileged
+                });
             }
             code => return Err(SmcError::Call { key, code }),
         }

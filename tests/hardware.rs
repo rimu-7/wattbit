@@ -73,6 +73,9 @@ fn smc_known_keys_are_readable_or_absent() {
             Err(SmcError::KeyNotFound(_)) => {
                 println!("{} absent  ({})", descriptor.key, descriptor.purpose)
             }
+            Err(SmcError::NotPrivileged | SmcError::Restricted) => {
+                println!("{} protected  ({})", descriptor.key, descriptor.purpose)
+            }
             Err(other) => panic!("unexpected error reading {}: {other}", descriptor.key),
         }
     }

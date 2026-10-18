@@ -72,20 +72,16 @@ fn limit_derives_lower_with_hysteresis() {
 }
 
 #[test]
-fn limit_accepts_explicit_lower() {
-    assert_eq!(
-        limit(&["limit", "80", "--lower", "60"]),
-        Ok(LimitRequest::Set(Thresholds::new(80, Some(60)).unwrap()))
-    );
-    assert!(limit(&["limit", "80", "--lower", "80"]).is_err());
-    assert!(limit(&["limit", "80", "--lower", "95"]).is_err());
+fn limit_rejects_lower_flag() {
+    rejects(&["limit", "80", "--lower", "60"]);
 }
 
 #[test]
-fn limit_disable() {
+fn limit_disable_and_off() {
     assert_eq!(limit(&["limit", "disable"]), Ok(LimitRequest::Disable));
     assert_eq!(limit(&["limit", "DISABLE"]), Ok(LimitRequest::Disable));
-    assert!(limit(&["limit", "disable", "--lower", "50"]).is_err());
+    assert_eq!(limit(&["limit", "off"]), Ok(LimitRequest::Disable));
+    assert_eq!(limit(&["limit", "OFF"]), Ok(LimitRequest::Disable));
     assert_eq!(LimitRequest::Disable.into_call(), Call::DisableLimit);
 }
 
@@ -95,7 +91,6 @@ fn limit_rejects_out_of_range_values() {
     rejects(&["limit", "101"]);
     rejects(&["limit", "-5"]);
     rejects(&["limit", "eighty"]);
-    rejects(&["limit", "80", "--lower", "300"]);
 }
 
 #[test]

@@ -29,16 +29,16 @@ One command installs everything. Run it again any time to update.
 ## Features
 
 **Battery care.** Keeping a battery at 100% all day wears it out faster.
-wattbit stops charging at the limit you choose and resumes a little below
-it.
+wattbit stops charging at the limit you choose and keeps your Mac running directly
+from the charger (AC pass-through), with zero battery cycling.
 
-- `sudo wattbit limit 80` holds the battery between 75% and 80%, across
-  restarts.
+- `sudo wattbit limit 80` stops charging at 80% and powers the Mac directly from the cable across restarts.
+- **Smart discharge-to-limit:** if your battery is currently above the limit (e.g. 99%), wattbit automatically discharges on battery down to your limit, then switches to charger power.
+- **Native Apple Silicon support (MCL):** controls macOS native Manual Charge Limit via PowerUI on modern Macs running macOS 15 (Sequoia) or later.
 - Reacts to every change macOS reports, and re-checks every 30 seconds.
 - Shows charge, health, cycle count, charge rate and voltage.
-- Can run the Mac from battery while plugged in.
-- Honest about hardware: if your Mac can't do something, wattbit says so and
-  explains why.
+- Can run the Mac from battery while plugged in (`wattbit adapter disable`).
+- Honest about hardware: if your Mac can't do something, wattbit says so and explains why.
 
 **Internet speed.** Live speeds in your menu bar: `↓ 1.23 MB/s ↑ 340 KB/s`.
 
@@ -55,18 +55,16 @@ One **universal binary** runs natively on both kinds of Mac.
 | | Requirement |
 | --- | --- |
 | **macOS** | 11 Big Sur or later |
-| **Processor** | Apple Silicon (M1 and later) or Intel |
+| **Processor** | Apple Silicon (M1, M2, M3, M4 and later) or Intel |
 | **Account** | An administrator, to install the battery service |
 
 | Feature | Apple Silicon | Intel | Desktop Macs |
 | --- | --- | --- | --- |
 | Speed meter | ✔ | ✔ | ✔ |
 | Battery details | ✔ | ✔ | — no battery |
-| Charge limit | ✔ on most models¹ | ✔ on most models | — |
-| Run on battery while plugged in | ✔ on most models | ✔ on models that support it | — |
-
-¹ On macOS 27, Apple removed the charge-control switch on the Macs tested so
-far. wattbit then offers [two alternatives](docs/BATTERY.md#if-your-mac-cant-stop-charging).
+| Charge limit | ✔ (native MCL & SMC) | ✔ (BCLM firmware) | — |
+| AC pass-through (zero cycling) | ✔ (powers from charger) | ✔ | — |
+| Run on battery while plugged in | ✔ | ✔ on models that support it | — |
 
 Run `wattbit doctor` to see exactly what your Mac supports.
 
@@ -88,7 +86,7 @@ Options go after `bash -s --`, for example `... | bash -s -- --no-speed`:
 | Option | What it does |
 | --- | --- |
 | `--no-speed` | Don't turn on the speed meter |
-| `--version 0.2.0` | Install a specific release |
+| `--version 0.3.0` | Install a specific release |
 | `--from-source` | Build from source with Rust instead of downloading |
 | `--uninstall [--purge]` | Remove wattbit (`--purge` also deletes settings and history) |
 
@@ -133,11 +131,11 @@ settings and usage history.
 | --- | --- | --- |
 | `wattbit status` | Charging, battery, settings and hardware support | |
 | `wattbit doctor` | Checks everything and explains how to fix problems | |
-| `wattbit limit [PERCENT] [--lower PERCENT]` | Sets the charge limit (default 80) | ✔ |
-| `wattbit limit disable` | Charges normally again | ✔ |
-| `wattbit adapter disable` / `enable` | Runs from battery while plugged in / uses the charger | ✔ |
-| `wattbit set SETTING on\|off` | Changes a [setting](docs/BATTERY.md#settings) | ✔ |
-| `wattbit speed on` / `off` | Shows / hides the speed meter | |
+| `sudo wattbit limit <PERCENT>` | Sets the charge limit (e.g. `80`, `85`, `90`) | ✔ |
+| `sudo wattbit limit disable` | Charges normally again (to 100%) | ✔ |
+| `sudo wattbit adapter disable` / `enable` | Runs from battery while plugged in / uses the charger | ✔ |
+| `sudo wattbit set SETTING on\|off` | Changes a [setting](docs/BATTERY.md#settings) | ✔ |
+| `wattbit speed on` / `off` | Shows / hides the speed meter in menu bar | |
 | `wattbit speed status` | Live speeds and 31 days of usage | |
 
 `status` and `speed status` accept `--json`. Every command explains itself

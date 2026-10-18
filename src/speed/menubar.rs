@@ -407,11 +407,11 @@ impl Ui {
                 item
             };
 
-            let update_title_item = add("Update available", std::ptr::null_mut());
+            let update_title_item = add("Update available", selector(c"wattbitCopyUpdateCommand:"));
             let update_items = [
                 update_title_item,
                 add("Run this in Terminal to update:", std::ptr::null_mut()),
-                add(&format!("    {INSTALL_COMMAND}"), std::ptr::null_mut()),
+                add(&format!("    {INSTALL_COMMAND}"), selector(c"wattbitCopyUpdateCommand:")),
                 add(
                     "Copy Update Command",
                     selector(c"wattbitCopyUpdateCommand:"),
@@ -434,6 +434,8 @@ impl Ui {
             let turn_off = add("Turn off speed meter", selector(c"wattbitTurnOff:"));
             let target = menu_target().ok_or("cannot register the menu action")?;
             send_void_of_id(turn_off, selector(c"setTarget:"), target);
+            send_void_of_id(update_items[0], selector(c"setTarget:"), target);
+            send_void_of_id(update_items[2], selector(c"setTarget:"), target);
             send_void_of_id(update_items[3], selector(c"setTarget:"), target);
             send_void_of_id(item, selector(c"setMenu:"), menu);
 

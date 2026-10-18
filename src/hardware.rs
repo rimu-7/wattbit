@@ -6,6 +6,7 @@
 
 use crate::battery::{self, BatteryError, BatteryTelemetry};
 use crate::capabilities::{self, Capabilities, Detection};
+use crate::mcl::{Mcl, MclError};
 use crate::smc::keys::{self, BinaryControl, FourCC, LedMode};
 use crate::smc::{hex, Smc, SmcError};
 
@@ -15,6 +16,8 @@ pub enum HardwareError {
     Unsupported(String),
     #[error(transparent)]
     Smc(#[from] SmcError),
+    #[error(transparent)]
+    Mcl(#[from] MclError),
     #[error("SMC key {key} holds unrecognized value [{value}]")]
     UnknownState { key: FourCC, value: String },
 }
@@ -165,5 +168,30 @@ impl Hardware {
             )));
         }
         Ok(self.smc()?.write_verified(keys::ACLC, &[mode.byte()])?)
+    }
+
+    pub fn mcl(&self) -> Result<&Mcl, HardwareError> {
+        self.detection.mcl.as_ref().ok_or_else(|| {
+            HardwareError::Unsupported(format!(
+                "native charge limit (MCL) is not supported on this Mac: {}",
+                self.capabilities().mcl.reason().unwrap_or("unknown reason")
+            ))
+        })
+    }
+
+    pub fn mcl_limit(&self) -> Result<u8, HardwareError> {
+        Ok(self.mcl()?.get_limit()?)
+    }
+
+    pub fn is_mcl_enabled(&self) -> Result<bool, HardwareError> {
+        Ok(self.mcl()?.is_enabled()?)
+    }
+
+    pub fn set_mcl_limit(&self, percent: u8) -> Result<(), HardwareError> {
+        Ok(self.mcl()?.set_limit(percent)?)
+    }
+
+    pub fn disable_mcl(&self) -> Result<(), HardwareError> {
+        Ok(self.mcl()?.disable()?)
     }
 }

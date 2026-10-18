@@ -154,19 +154,50 @@ pub fn render_status(report: &StatusReport) -> String {
         "  Allow charging: {} (refreshes can take up to 2 minutes)",
         tri_state(charging.charging_allowed)
     );
-    if charging.charging_allowed == Some(false) {
-        match (charging.policy_state, config.charge_limit) {
-            (Some(ChargeState::ChargingSuppressed), _) => out.push_str(
-                "    Your Mac will not charge, because your current charge is above the limit.\n",
-            ),
-            (Some(ChargeState::WaitingToResumeCharging), Some(limit)) => {
-                let _ = writeln!(
-                    out,
-                    "    Your Mac will resume charging once the charge drops below {}%.",
-                    limit.lower()
+    let fallback_holding = report.mode == ChargeControlMode::AdapterFallback
+        && matches!(
+            charging.policy_state,
+            Some(ChargeState::ChargingSuppressed | ChargeState::WaitingToResumeCharging)
+        );
+    if charging.charging_allowed == Some(false) && fallback_holding {
+        if let Some(limit) = config.charge_limit {
+            let _ = writeln!(
+                out,
+                "    The charger is switched off, so your Mac runs from its battery until it drops \
+                 below {}%.\n    To hold the charge while running from the cable, use the limit in \
+                 System Settings → Battery → Charging instead.",
+                limit.lower()
+            );
+        }
+    } else if charging.charging_allowed == Some(false) {
+        if report.mode == ChargeControlMode::Mcl {
+            if charging.adapter_enabled == Some(false) {
+                if let Some(limit) = config.charge_limit {
+                    let _ = writeln!(
+                        out,
+                        "    Discharging to limit: running on battery until charge drops to {}%, then will power from charger.",
+                        limit.upper()
+                    );
+                }
+            } else {
+                out.push_str(
+                    "    Holding at limit: drawing power directly from the charger while battery charging is stopped.\n",
                 );
             }
-            _ => {}
+        } else {
+            match (charging.policy_state, config.charge_limit) {
+                (Some(ChargeState::ChargingSuppressed), _) => out.push_str(
+                    "    Your Mac will not charge, because your current charge is above the limit.\n",
+                ),
+                (Some(ChargeState::WaitingToResumeCharging), Some(limit)) => {
+                    let _ = writeln!(
+                        out,
+                        "    Your Mac will resume charging once the charge drops below {}%.",
+                        limit.lower()
+                    );
+                }
+                _ => {}
+            }
         }
     }
     if !report.conflicts.is_empty() {
