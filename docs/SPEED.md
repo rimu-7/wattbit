@@ -244,11 +244,13 @@ berry speed on
 ```
 
 - The **login item** is a per-user LaunchAgent, not a system daemon. It
-  carries `RunAtLoad` (start at login), `KeepAlive` (restart if it crashes),
-  and is limited to the Aqua session, so it only ever runs inside your
-  desktop login. `berry speed off` removes the plist and unloads the job;
-  while it stays loaded, `launchctl` would restart a killed agent, which is
-  why `off` always unloads first.
+  carries `RunAtLoad` (start at login) and `KeepAlive` (restart after a
+  crash, but not after a clean exit), and is limited to the Aqua session,
+  so it only ever runs inside your desktop login. `berry speed off` removes
+  the plist and unloads the job; while it stays loaded, `launchctl` would
+  restart a killed agent, which is why `off` always unloads first. The
+  menu's **Turn off speed meter** exits cleanly, which launchd leaves
+  stopped.
 - If launchd can't start the agent (no GUI session, unusual setup), `on`
   falls back to starting it directly, detached from the terminal with
   `setsid`, logging to `speed.log`. `--no-launchd` requests that path

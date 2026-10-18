@@ -410,6 +410,10 @@ fn bootout() -> anyhow::Result<()> {
 }
 
 /// Renders the LaunchAgent property list for `binary`.
+///
+/// `RunAtLoad` starts the meter at login; `KeepAlive` restarts it if it
+/// crashes (an unsuccessful exit) but not after a clean stop — the menu's
+/// *Turn off* item exits with status 0, and the job must stay down then.
 pub fn plist(binary: &Path, log: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -427,7 +431,10 @@ pub fn plist(binary: &Path, log: &Path) -> String {
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>LimitLoadToSessionType</key>
@@ -1050,6 +1057,11 @@ mod tests {
         assert!(text.contains("<string>agent</string>"));
         assert!(text.contains("<key>LimitLoadToSessionType</key>"));
         assert!(text.contains("<string>Aqua</string>"));
+        // Restart after a crash, but stay stopped after a clean exit (the
+        // menu's Turn off item), which launchd reports as exit status 0.
+        assert!(text.contains("<key>KeepAlive</key>"));
+        assert!(text.contains("<key>SuccessfulExit</key>"));
+        assert!(text.contains("<false/>"));
         assert_eq!(
             text.matches("<dict>").count(),
             text.matches("</dict>").count()
