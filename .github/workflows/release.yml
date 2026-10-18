@@ -19,7 +19,7 @@ jobs:
     name: Build and publish
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -66,3 +66,27 @@ jobs:
             --title "wattbit ${GITHUB_REF_NAME#v}" \
             --generate-notes \
             --verify-tag
+
+  verify:
+    # Installs nothing: downloads the published archive like install.sh does
+    # and runs it natively on Apple Silicon and Intel.
+    name: verify on ${{ matrix.os }}
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - name: Download and check the release
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          curl -fsSLO "$base/$ASSET"
+          curl -fsSLO "$base/$ASSET.sha256"
+          shasum -a 256 -c "$ASSET.sha256"
+          tar -xzf "$ASSET" wattbit
+          codesign --verify --verbose wattbit
+          echo "machine: $(uname -m), macOS $(sw_vers -productVersion)"
+          test "$(./wattbit --version)" = "wattbit ${GITHUB_REF_NAME#v}"
+          WATTBIT_SPEED_DIR="$RUNNER_TEMP/speed" WATTBIT_NO_UPDATE_CHECK=1 \
+            ./wattbit speed agent --once --interval 0.5

@@ -91,7 +91,7 @@ menu bar, just left of the system icons:
   **Copy Update Command** puts the command on your clipboard; paste it into
   Terminal and press Return. The update keeps your usage history and
   restarts the meter on the new version. See
-  [Updating](../README.md#updating-and-uninstalling) for how the check
+  [Updating](../README.md#updating) for how the check
   works and how to turn it off.
 
 macOS decides the exact slot; wattbit can't programmatically place itself

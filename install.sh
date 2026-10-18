@@ -166,6 +166,15 @@ main() {
   done
 
   [ "$(uname -s)" = Darwin ] || die "wattbit runs on macOS only."
+  OS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  OS_MAJOR="${OS_VERSION%%.*}"
+  # Big Sur reports 10.16 to programs that ask for compatibility.
+  case "$OS_VERSION" in 10.16*) OS_MAJOR=11 ;; esac
+  case "$OS_MAJOR" in
+    '' | *[!0-9]*) die "cannot tell which macOS this is ($OS_VERSION)." ;;
+  esac
+  [ "$OS_MAJOR" -ge 11 ] ||
+    die "wattbit needs macOS 11 Big Sur or later; this Mac runs macOS $OS_VERSION."
   [ "$(id -u)" -ne 0 ] ||
     die "run this as yourself, without sudo. It asks for your password when it needs it."
   for tool in curl tar shasum awk; do

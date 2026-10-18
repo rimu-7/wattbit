@@ -13,7 +13,7 @@ jobs:
     name: fmt, clippy, test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,3 +26,27 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+
+  compatibility:
+    # The release binary targets macOS 11+ on both chips; this runs the whole
+    # suite natively on every macOS and CPU GitHub offers.
+    name: test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-15-intel, macos-26]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Show the machine
+        run: sw_vers && uname -m && sysctl -n machdep.cpu.brand_string
+      - run: cargo test --locked
+      - name: Smoke-test the release build
+        run: |
+          cargo build --release --locked
+          ./target/release/wattbit --version
+          ./target/release/wattbit doctor || true
+          WATTBIT_SPEED_DIR="$RUNNER_TEMP/speed" WATTBIT_NO_UPDATE_CHECK=1 \
+            ./target/release/wattbit speed agent --once --interval 0.5

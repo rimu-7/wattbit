@@ -1,0 +1,5 @@
+# One minimum for both chips: macOS 11 Big Sur, the first release for Apple
+# Silicon. Older systems refuse to launch the binary instead of failing
+# later, and install.sh checks the version before downloading anything.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
