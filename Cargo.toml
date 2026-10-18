@@ -1,6 +1,6 @@
 [package]
 name = "wattbit"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Battery charge limiting and a menu bar internet speed meter for macOS"
 repository = "https://github.com/rimu-7/wattbit"
