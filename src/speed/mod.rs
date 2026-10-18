@@ -12,8 +12,10 @@
 //!
 //! See `docs/SPEED.md` for the full user-facing description.
 
+pub mod agent;
 pub mod date;
 pub mod format;
+pub mod menubar;
 pub mod sampler;
 pub mod store;
 

@@ -67,7 +67,9 @@ pub fn plist(binary: &Path) -> String {
     )
 }
 
-fn xml_escape(text: &str) -> String {
+/// Escapes the five XML special characters, for embedding text in the
+/// launchd plist (shared with the speed agent's own plist writer).
+pub(crate) fn xml_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -91,7 +93,7 @@ fn require_root(command: &str) -> anyhow::Result<()> {
 }
 
 /// Runs launchctl with a bounded wait.
-fn launchctl(args: &[&str]) -> anyhow::Result<Output> {
+pub(crate) fn launchctl(args: &[&str]) -> anyhow::Result<Output> {
     let child = Command::new(LAUNCHCTL)
         .args(args)
         .stdin(Stdio::null())
@@ -114,7 +116,7 @@ fn launchctl(args: &[&str]) -> anyhow::Result<Output> {
     }
 }
 
-fn launchctl_checked(args: &[&str]) -> anyhow::Result<()> {
+pub(crate) fn launchctl_checked(args: &[&str]) -> anyhow::Result<()> {
     let output = launchctl(args)?;
     if !output.status.success() {
         bail!(
