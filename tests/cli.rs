@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use berry::cli::{
-    parse_limit_target, Cli, Command, DaemonCommand, LimitRequest, LimitTarget, Switch, Toggle,
+    parse_limit_target, Cli, Command, DaemonCommand, LimitRequest, LimitTarget, SpeedCommand,
+    Switch, Toggle,
 };
 use berry::config::ConfigOption;
 use berry::policy::Thresholds;
@@ -192,4 +193,87 @@ fn service_commands() {
         Command::UninstallService { purge: true }
     ));
     assert!(matches!(parse(&["doctor"]).command, Command::Doctor));
+}
+
+#[test]
+fn speed_commands() {
+    assert!(matches!(
+        parse(&["speed", "on"]).command,
+        Command::Speed {
+            command: SpeedCommand::On { no_launchd: false }
+        }
+    ));
+    assert!(matches!(
+        parse(&["speed", "on", "--no-launchd"]).command,
+        Command::Speed {
+            command: SpeedCommand::On { no_launchd: true }
+        }
+    ));
+    assert!(matches!(
+        parse(&["speed", "off"]).command,
+        Command::Speed {
+            command: SpeedCommand::Off
+        }
+    ));
+    assert!(matches!(
+        parse(&["speed", "status"]).command,
+        Command::Speed {
+            command: SpeedCommand::Status { json: false }
+        }
+    ));
+    assert!(matches!(
+        parse(&["speed", "status", "--json"]).command,
+        Command::Speed {
+            command: SpeedCommand::Status { json: true }
+        }
+    ));
+    rejects(&["speed"]);
+    rejects(&["speed", "toggle"]);
+}
+
+#[test]
+fn speed_agent_options() {
+    match parse(&["speed", "agent"]).command {
+        Command::Speed {
+            command:
+                SpeedCommand::Agent {
+                    headless,
+                    interval,
+                    once,
+                },
+        } => {
+            assert!(!headless);
+            assert_eq!(interval, 1.0);
+            assert!(!once);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    match parse(&[
+        "speed",
+        "agent",
+        "--headless",
+        "--interval",
+        "2.5",
+        "--once",
+    ])
+    .command
+    {
+        Command::Speed {
+            command:
+                SpeedCommand::Agent {
+                    headless,
+                    interval,
+                    once,
+                },
+        } => {
+            assert!(headless);
+            assert_eq!(interval, 2.5);
+            assert!(once);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    rejects(&["speed", "agent", "--interval", "0.01"]);
+    rejects(&["speed", "agent", "--interval", "61"]);
+    rejects(&["speed", "agent", "--interval", "fast"]);
+    rejects(&["speed", "agent", "--interval", "nan"]);
 }
