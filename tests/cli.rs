@@ -1,23 +1,23 @@
 use std::path::PathBuf;
 
-use berry::cli::{
+use clap::{CommandFactory, Parser};
+use wattbit::cli::{
     parse_limit_target, Cli, Command, DaemonCommand, LimitRequest, LimitTarget, SpeedCommand,
     Switch, Toggle,
 };
-use berry::config::ConfigOption;
-use berry::policy::Thresholds;
-use berry::protocol::Call;
-use berry::{CONFIG_PATH, SOCKET_PATH};
-use clap::{CommandFactory, Parser};
+use wattbit::config::ConfigOption;
+use wattbit::policy::Thresholds;
+use wattbit::protocol::Call;
+use wattbit::{CONFIG_PATH, SOCKET_PATH};
 
 fn parse(args: &[&str]) -> Cli {
-    Cli::try_parse_from(std::iter::once("berry").chain(args.iter().copied()))
+    Cli::try_parse_from(std::iter::once("wattbit").chain(args.iter().copied()))
         .unwrap_or_else(|e| panic!("{args:?} should parse: {e}"))
 }
 
 fn rejects(args: &[&str]) {
     assert!(
-        Cli::try_parse_from(std::iter::once("berry").chain(args.iter().copied())).is_err(),
+        Cli::try_parse_from(std::iter::once("wattbit").chain(args.iter().copied())).is_err(),
         "{args:?} should be rejected"
     );
 }

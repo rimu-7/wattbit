@@ -1,7 +1,7 @@
 //! Detection of other charge-limit tools.
 //!
-//! batt, AlDente, actuallymentor's `battery` and Battery Toolkit write the
-//! same SMC keys as berry. Two controllers driving one key make the charging
+//! batt, AlDente, actuallymentor's `battery`, Battery Toolkit and berry
+//! (wattbit's previous name) write the same SMC keys as wattbit. Two controllers driving one key make the charging
 //! state oscillate, so the daemon pauses its hardware writes while another
 //! one is running and reports it instead of fighting.
 //!
@@ -91,7 +91,24 @@ fn is_battery_toolkit(p: &ProcessInfo) -> bool {
     exe.contains("batterytoolkit") || exe.contains("battery toolkit")
 }
 
+/// berry's daemon, left behind by an install that predates the rename. Its
+/// speed meter ran from the same binary but never touches the SMC, so only
+/// `berryd daemon run` counts. Without readable arguments (another user's
+/// process, seen without root) the executable alone has to do, and the
+/// daemon is the one that runs as root.
+fn is_legacy_berry(p: &ProcessInfo) -> bool {
+    basename(&p.executable) == "berryd"
+        && (p.args.is_empty() || p.args.get(1).is_some_and(|a| a == "daemon"))
+}
+
 pub const KNOWN_TOOLS: &[KnownTool] = &[
+    KnownTool {
+        name: "berry (wattbit's old name)",
+        remedy: "sudo wattbit install-service    (moves your settings over and removes berry)",
+        // Leftover files are reported by `wattbit doctor` on their own.
+        installed: &[],
+        matches: is_legacy_berry,
+    },
     KnownTool {
         name: "batt",
         remedy: "sudo launchctl bootout system/cc.chlc.batt; \
@@ -399,6 +416,24 @@ mod tests {
             &[],
         );
         assert_eq!(tool(&toolkit), Some("Battery Toolkit"));
+
+        let berry = process(
+            "/Library/PrivilegedHelperTools/berryd",
+            &["/Library/PrivilegedHelperTools/berryd", "daemon", "run"],
+        );
+        assert_eq!(tool(&berry), Some("berry (wattbit's old name)"));
+        // Seen without root, a root process shows no arguments.
+        let berry = process("/Library/PrivilegedHelperTools/berryd", &[]);
+        assert_eq!(tool(&berry), Some("berry (wattbit's old name)"));
+    }
+
+    #[test]
+    fn berrys_speed_meter_is_not_a_conflict() {
+        let meter = process(
+            "/Library/PrivilegedHelperTools/berryd",
+            &["/usr/local/bin/berry", "speed", "agent"],
+        );
+        assert_eq!(tool(&meter), None);
     }
 
     #[test]
@@ -408,7 +443,7 @@ mod tests {
                 "/System/Library/ExtensionKit/Extensions/BatterySettingsIntentsExtension.appex/Contents/MacOS/BatterySettingsIntentsExtension",
                 &[],
             ),
-            process("/Library/PrivilegedHelperTools/berryd", &["berryd", "daemon", "run"]),
+            process("/Library/PrivilegedHelperTools/wattbitd", &["wattbitd", "daemon", "run"]),
             process("/usr/bin/grep", &["grep", "battery"]),
             process("/opt/homebrew/bin/battery-monitor", &[]),
         ] {

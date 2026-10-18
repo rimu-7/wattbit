@@ -1,16 +1,18 @@
-//! Assembling the `berry speed status` document.
+//! Assembling the `wattbit speed status` document.
 //!
-//! The document combines three sources: the pid file (is the meter on?), the
-//! live socket (current rates and totals, only while the agent answers) and
-//! the usage store (the last [`RETENTION_DAYS`] days).
+//! The document combines four sources: the pid file (is the meter on?), the
+//! live socket (current rates and totals, only while the agent answers),
+//! the usage store (the last [`RETENTION_DAYS`] days) and the agent's
+//! cached release check (is there an update?).
 
 use serde::Serialize;
 
 use super::agent;
 use super::date::LocalDate;
 use super::store::{DayUsage, UsageStore, RETENTION_DAYS};
+use crate::update::{self, UpdateNotice};
 
-/// Everything `berry speed status` reports.
+/// Everything `wattbit speed status` reports.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeedStatus {
     /// Whether the sampling agent is running.
@@ -24,6 +26,8 @@ pub struct SpeedStatus {
     pub usage: Option<UsageReport>,
     /// A problem with the usage file, if any.
     pub warning: Option<String>,
+    /// A newer wattbit release and the command that installs it.
+    pub update: Option<UpdateNotice>,
 }
 
 /// Traffic over the retention window.
@@ -59,11 +63,12 @@ pub fn query(paths: &agent::SpeedPaths) -> SpeedStatus {
     };
     SpeedStatus {
         running: agent.is_some(),
-        pid: agent.map(|agent| agent.pid),
-        started_at: agent.map(|agent| agent.started_at),
+        pid: agent.as_ref().map(|agent| agent.pid),
+        started_at: agent.as_ref().map(|agent| agent.started_at),
         live,
         usage,
         warning,
+        update: update::pending(&paths.dir),
     }
 }
 
@@ -97,7 +102,8 @@ mod tests {
     use std::fs;
 
     fn paths(name: &str) -> agent::SpeedPaths {
-        let dir = std::env::temp_dir().join(format!("berry-status-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wattbit-status-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         agent::SpeedPaths {

@@ -1,4 +1,4 @@
-//! Socket client and the `berry status` renderer.
+//! Socket client and the `wattbit status` renderer.
 
 use std::fmt::Write as _;
 use std::io;
@@ -22,8 +22,8 @@ pub const CROSS: &str = "✘";
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error(
-        "the berry daemon is not running (nothing is listening on {path}); \
-         install it with `sudo berry install-service`"
+        "the wattbit daemon is not running (nothing is listening on {path}); \
+         install it with `sudo wattbit install-service`"
     )]
     NotRunning { path: String },
     #[error(
@@ -128,7 +128,7 @@ fn mark(value: bool) -> &'static str {
     }
 }
 
-/// `✔` or `✘` for a known state, `unsupported` when berry cannot tell.
+/// `✔` or `✘` for a known state, `unsupported` when wattbit cannot tell.
 fn tri_state(value: Option<bool>) -> &'static str {
     value.map_or("unsupported", mark)
 }
@@ -142,7 +142,7 @@ pub fn support_mark(support: &Support) -> &'static str {
     }
 }
 
-/// Renders the `berry status` dashboard.
+/// Renders the `wattbit status` dashboard.
 pub fn render_status(report: &StatusReport) -> String {
     let mut out = String::new();
     let charging = &report.charging;
@@ -172,14 +172,14 @@ pub fn render_status(report: &StatusReport) -> String {
     if !report.conflicts.is_empty() {
         let _ = writeln!(
             out,
-            "    Paused: {} also {} charging. Run `berry doctor` to remove {}.",
+            "    Paused: {} also {} charging. Run `wattbit doctor` to remove {}.",
             conflicts::summarize(&report.conflicts),
             conflicts::agree(&report.conflicts, "controls", "control"),
             conflicts::agree(&report.conflicts, "it", "them"),
         );
     } else if charging.charging_allowed.is_none() && report.mode == ChargeControlMode::Unsupported {
         out.push_str(
-            "    This Mac has no charge-inhibit SMC key; run `berry doctor` for alternatives.\n",
+            "    This Mac has no charge-inhibit SMC key; run `wattbit doctor` for alternatives.\n",
         );
     }
     let _ = writeln!(
@@ -281,7 +281,7 @@ pub fn render_status(report: &StatusReport) -> String {
         support_mark(&caps.calibration)
     );
 
-    // berry does not implement calibration, so none is ever running or
+    // wattbit does not implement calibration, so none is ever running or
     // scheduled.
     out.push_str("\nCalibration status:\n  Phase: Idle\n  Schedule: disabled\n");
 

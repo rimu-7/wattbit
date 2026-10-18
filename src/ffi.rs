@@ -1,9 +1,9 @@
-//! Raw declarations for the IOKit APIs berry calls.
+//! Raw declarations for the IOKit APIs wattbit calls.
 //!
 //! Every signature and constant here is transcribed from the macOS SDK
 //! headers (`IOKit/IOKitLib.h`, `IOKit/IOReturn.h`, `IOKit/IOMessage.h`,
 //! `IOKit/pwr_mgt/IOPMLib.h` and `IOKit/ps/IOPowerSources.h`). Only the
-//! symbols berry actually uses are declared.
+//! symbols wattbit actually uses are declared.
 
 #![allow(non_camel_case_types, non_upper_case_globals)]
 
@@ -156,7 +156,7 @@ extern "C" {
     ) -> CFRunLoopSourceRef;
 }
 
-/// Human-readable rendering of an `IOReturn`, naming the codes berry
+/// Human-readable rendering of an `IOReturn`, naming the codes wattbit
 /// expects to encounter.
 pub fn describe_ioreturn(code: IOReturn) -> String {
     let name = match code {

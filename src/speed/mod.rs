@@ -1,14 +1,15 @@
-//! The internet speed meter (`berry speed`).
+//! The internet speed meter (`wattbit speed`).
 //!
 //! Unlike charge control, the speed meter needs no root and never talks to
-//! the SMC. `berry speed on` starts a small agent in the user's login
+//! the SMC. `wattbit speed on` starts a small agent in the user's login
 //! session that:
 //!
 //! - samples the kernel's per-interface byte counters once per second,
 //! - shows the live rates as a menu bar item,
 //! - accumulates traffic into a per-day usage history, kept for 31 days,
-//! - answers live-status queries on a private Unix socket, and
-//! - stops when told to (`berry speed off` or the menu's *Turn off* item).
+//! - answers live-status queries on a private Unix socket,
+//! - offers new wattbit releases in its menu (see [`crate::update`]), and
+//! - stops when told to (`wattbit speed off` or the menu's *Turn off* item).
 //!
 //! See `docs/SPEED.md` for the full user-facing description.
 
@@ -32,6 +33,8 @@ pub struct Display {
     pub today_upload_bytes: u64,
     pub window_download_bytes: u64,
     pub window_upload_bytes: u64,
+    /// A wattbit release newer than the running one, if known.
+    pub update: Option<crate::update::Version>,
 }
 
 /// Set when the meter should stop: the menu's *Turn off* item, SIGTERM,

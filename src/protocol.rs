@@ -1,4 +1,4 @@
-//! IPC protocol between `berry` and the daemon.
+//! IPC protocol between `wattbit` and the daemon.
 //!
 //! JSON-RPC 2.0 over a Unix stream socket. The client writes one request as
 //! a single line of JSON terminated by `\n`; the daemon answers with one
@@ -260,7 +260,7 @@ pub fn encode_line<T: Serialize>(message: &T) -> serde_json::Result<Vec<u8>> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChargingStatus {
     /// Whether the battery may charge, from hardware read-back where
-    /// possible. `None` when berry cannot control or observe it.
+    /// possible. `None` when wattbit cannot control or observe it.
     pub charging_allowed: Option<bool>,
     /// Hysteresis state; `None` when no limit is configured.
     pub policy_state: Option<ChargeState>,
@@ -278,11 +278,11 @@ pub struct StatusReport {
     pub battery_error: Option<String>,
     pub charging: ChargingStatus,
     pub config: Config,
-    /// Set when `/etc/berry.json` could not be loaded and defaults are in use.
+    /// Set when `/etc/wattbit.json` could not be loaded and defaults are in use.
     pub config_warning: Option<String>,
     pub mode: ChargeControlMode,
     pub capabilities: Capabilities,
-    /// Other charge limiters running; berry pauses hardware writes while
+    /// Other charge limiters running; wattbit pauses hardware writes while
     /// any are present.
     #[serde(default)]
     pub conflicts: Vec<Conflict>,

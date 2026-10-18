@@ -137,7 +137,7 @@ unsafe extern "C" fn power_callback(
         }
     };
     match message_type {
-        // berry never vetoes idle sleep.
+        // wattbit never vetoes idle sleep.
         ffi::kIOMessageCanSystemSleep => acknowledge(),
         ffi::kIOMessageSystemWillSleep => {
             let (ack, done) = mpsc::sync_channel(1);
@@ -168,7 +168,7 @@ pub fn spawn_sleep_watcher(
 ) -> Result<WatcherFeatures, PowerError> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<WatcherFeatures, PowerError>>();
     thread::Builder::new()
-        .name("berry-power".into())
+        .name("wattbit-power".into())
         .spawn(move || {
             let context = Box::into_raw(Box::new(WatcherContext {
                 root_port: AtomicU32::new(0),
@@ -228,9 +228,11 @@ mod tests {
 
     #[test]
     fn assertions_can_be_taken_and_released() {
-        let assertion =
-            PowerAssertion::acquire(AssertionKind::PreventUserIdleSystemSleep, "berry unit test")
-                .expect("unprivileged processes may hold idle-sleep assertions");
+        let assertion = PowerAssertion::acquire(
+            AssertionKind::PreventUserIdleSystemSleep,
+            "wattbit unit test",
+        )
+        .expect("unprivileged processes may hold idle-sleep assertions");
         assert_eq!(assertion.kind(), AssertionKind::PreventUserIdleSystemSleep);
     }
 }

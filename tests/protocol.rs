@@ -1,9 +1,9 @@
-use berry::config::ConfigOption;
-use berry::protocol::{
+use serde_json::{json, Value};
+use wattbit::config::ConfigOption;
+use wattbit::protocol::{
     decode_request, encode_line, Call, ErrorKind, Outcome, Reply, Request, Response, RpcError,
     METHODS,
 };
-use serde_json::{json, Value};
 
 fn all_calls() -> Vec<Call> {
     vec![

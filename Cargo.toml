@@ -1,10 +1,11 @@
 [package]
-name = "berry"
-version = "0.1.0"
+name = "wattbit"
+version = "0.2.0"
 edition = "2021"
-description = "Battery charge limiting, power adapter control and battery telemetry for macOS"
+description = "Battery charge limiting and a menu bar internet speed meter for macOS"
+repository = "https://github.com/rimu-7/wattbit"
 readme = "README.md"
-keywords = ["macos", "battery", "smc", "iokit", "launchd"]
+keywords = ["macos", "battery", "smc", "menubar", "network"]
 categories = ["command-line-utilities", "hardware-support", "os::macos-apis"]
 publish = false
 

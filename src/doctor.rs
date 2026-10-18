@@ -1,4 +1,4 @@
-//! `berry doctor`: diagnostic checks.
+//! `wattbit doctor`: diagnostic checks.
 //!
 //! Local checks run as the invoking user and never write to the SMC. Write
 //! access is reported from the daemon, which tests it as root at startup.
@@ -14,7 +14,9 @@ use crate::conflicts::{self, Conflict};
 use crate::protocol::{Call, DaemonDiagnostics, Reply};
 use crate::service::{INSTALLED_BINARY, PLIST_PATH};
 use crate::smc::Smc;
-use crate::CONFIG_PATH;
+use crate::speed::agent::{self, SpeedPaths};
+use crate::update::{self, INSTALL_COMMAND};
+use crate::{legacy, CONFIG_PATH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -77,12 +79,30 @@ pub async fn run(socket: &Path) -> Vec<Check> {
         host.os_version.as_deref().unwrap_or("unknown")
     );
     let level = if host.translated {
-        detail.push_str("; berry is running under Rosetta 2, install the arm64 build");
+        detail.push_str("; wattbit is running under Rosetta 2, install the arm64 build");
         Level::Warn
     } else {
         Level::Pass
     };
     checks.push(check(level, "Architecture", detail));
+    let speed = SpeedPaths::resolve().ok();
+    checks.push(
+        match speed.as_ref().and_then(|paths| update::pending(&paths.dir)) {
+            Some(notice) => check(
+                Level::Warn,
+                "Version",
+                format!(
+                    "wattbit {} (wattbit {} is available). Update with:\n    {}",
+                    notice.current, notice.latest, notice.command
+                ),
+            ),
+            None => check(
+                Level::Pass,
+                "Version",
+                format!("wattbit {}", env!("CARGO_PKG_VERSION")),
+            ),
+        },
+    );
 
     match battery::read() {
         Ok(b) => {
@@ -125,13 +145,25 @@ pub async fn run(socket: &Path) -> Vec<Check> {
                 Level::Warn
             };
             let mut detail = format!(
-                "berryd {} answering on {} (pid {}, uid {})",
+                "wattbitd {} answering on {} (pid {}, uid {})",
                 d.version, d.socket_path, d.pid, d.euid
             );
             if d.euid != 0 {
                 detail.push_str("; not root, so hardware writes are disabled");
             }
             checks.push(check(level, "Daemon socket", detail));
+            if d.version != env!("CARGO_PKG_VERSION") {
+                checks.push(check(
+                    Level::Warn,
+                    "Daemon version",
+                    format!(
+                        "the daemon runs wattbit {}, but this command is wattbit {}. \
+                         Finish the update with:\n    {INSTALL_COMMAND}",
+                        d.version,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ));
+            }
             if let Some(error) = &d.last_error {
                 checks.push(check(Level::Warn, "Daemon state", error.clone()));
             }
@@ -212,16 +244,76 @@ pub async fn run(socket: &Path) -> Vec<Check> {
         (false, false) => check(
             Level::Info,
             "LaunchDaemon",
-            "not installed; run `sudo berry install-service`",
+            format!("not installed; install wattbit with:\n    {INSTALL_COMMAND}"),
         ),
         _ => check(
             Level::Warn,
             "LaunchDaemon",
-            "partially installed; run `sudo berry install-service` again",
+            format!("partially installed; repair it with:\n    {INSTALL_COMMAND}"),
         ),
     });
 
+    if let Some(paths) = &speed {
+        checks.push(speed_check(paths));
+    }
+    checks.extend(leftover_check());
+
     checks
+}
+
+/// Whether the speed meter runs; it is optional, so this is information.
+fn speed_check(paths: &SpeedPaths) -> Check {
+    match agent::live_agent(paths) {
+        Some(meter) if meter.version.as_deref() == Some(env!("CARGO_PKG_VERSION")) => check(
+            Level::Pass,
+            "Speed meter",
+            format!("on (pid {})", meter.pid),
+        ),
+        Some(meter) => check(
+            Level::Warn,
+            "Speed meter",
+            format!(
+                "on (pid {}), but running wattbit {}; restart it with `wattbit speed on`",
+                meter.pid,
+                meter.version.as_deref().unwrap_or("0.1")
+            ),
+        ),
+        None => check(
+            Level::Info,
+            "Speed meter",
+            "off; show it in the menu bar with `wattbit speed on`",
+        ),
+    }
+}
+
+/// Files berry, wattbit's previous name, left behind.
+fn leftover_check() -> Option<Check> {
+    let mut found: Vec<String> = legacy::system_leftovers()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if let Ok(home) = agent::home() {
+        for relative in [
+            legacy::SPEED_DIR.to_owned(),
+            format!("Library/LaunchAgents/{}.plist", legacy::SPEED_LABEL),
+        ] {
+            let path = home.join(relative);
+            if path.exists() {
+                found.push(path.display().to_string());
+            }
+        }
+    }
+    (!found.is_empty()).then(|| {
+        check(
+            Level::Warn,
+            "Old berry files",
+            format!(
+                "berry (wattbit's old name) left {}. Running the installer moves your \
+                 settings and history over and removes them:\n    {INSTALL_COMMAND}",
+                found.join(", ")
+            ),
+        )
+    })
 }
 
 /// Reports other charge limiters, merging this process's scan with the
@@ -254,7 +346,7 @@ fn conflict_checks(checks: &mut Vec<Check>, daemon: Option<&DaemonDiagnostics>) 
             Level::Fail,
             format!("Conflict: {tool}"),
             format!(
-                "running (pid {}: {}); berry pauses while it runs. Remove it with:\n    {}",
+                "running (pid {}: {}); wattbit pauses while it runs. Remove it with:\n    {}",
                 pids.join(", "),
                 group[0].detail,
                 group[0].remedy

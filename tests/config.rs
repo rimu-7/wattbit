@@ -2,15 +2,15 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use berry::config::{Config, ConfigError, ConfigOption, ConfigStore, CONFIG_VERSION};
-use berry::policy::Thresholds;
+use wattbit::config::{Config, ConfigError, ConfigOption, ConfigStore, CONFIG_VERSION};
+use wattbit::policy::Thresholds;
 
 /// A scratch directory under the system temp dir, removed on drop.
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("berry-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wattbit-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
@@ -26,14 +26,14 @@ impl Drop for TempDir {
 #[test]
 fn missing_file_loads_as_none() {
     let dir = TempDir::new("missing");
-    let store = ConfigStore::new(dir.0.join("berry.json"));
+    let store = ConfigStore::new(dir.0.join("wattbit.json"));
     assert!(store.load().unwrap().is_none());
 }
 
 #[test]
 fn save_then_load_round_trips() {
     let dir = TempDir::new("roundtrip");
-    let path = dir.0.join("berry.json");
+    let path = dir.0.join("wattbit.json");
     let store = ConfigStore::new(&path);
 
     let mut config = Config {
@@ -58,7 +58,7 @@ fn save_then_load_round_trips() {
 #[test]
 fn defaults_fill_missing_fields() {
     let dir = TempDir::new("defaults");
-    let path = dir.0.join("berry.json");
+    let path = dir.0.join("wattbit.json");
     fs::write(
         &path,
         r#"{"version":1,"charge_limit":{"upper":80,"lower":75}}"#,
@@ -74,7 +74,7 @@ fn defaults_fill_missing_fields() {
 #[test]
 fn invalid_thresholds_are_rejected() {
     let dir = TempDir::new("invalid");
-    let path = dir.0.join("berry.json");
+    let path = dir.0.join("wattbit.json");
     for bad in [
         r#"{"charge_limit":{"upper":40,"lower":35}}"#,
         r#"{"charge_limit":{"upper":80,"lower":80}}"#,
@@ -94,7 +94,7 @@ fn invalid_thresholds_are_rejected() {
 #[test]
 fn malformed_and_future_files_are_rejected() {
     let dir = TempDir::new("malformed");
-    let path = dir.0.join("berry.json");
+    let path = dir.0.join("wattbit.json");
     fs::write(&path, "{not json").unwrap();
     assert!(matches!(
         ConfigStore::new(&path).load(),
@@ -111,7 +111,7 @@ fn malformed_and_future_files_are_rejected() {
 #[test]
 fn oversized_file_is_rejected() {
     let dir = TempDir::new("oversized");
-    let path = dir.0.join("berry.json");
+    let path = dir.0.join("wattbit.json");
     fs::write(&path, vec![b' '; 70 * 1024]).unwrap();
     assert!(matches!(
         ConfigStore::new(&path).load(),

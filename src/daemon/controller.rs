@@ -84,13 +84,13 @@ struct State {
     /// Between a will-sleep notification and the following wake.
     asleep: bool,
     assertions: Assertions,
-    /// LED mode berry last wrote; `None` while the system owns the LED.
+    /// LED mode wattbit last wrote; `None` while the system owns the LED.
     led: Option<LedMode>,
     /// Other charge limiters seen in the latest scan.
     conflicts: Vec<Conflict>,
-    /// berry itself inhibited charging, as opposed to another tool.
+    /// wattbit itself inhibited charging, as opposed to another tool.
     owns_inhibit: bool,
-    /// berry itself bypassed the adapter, as opposed to another tool.
+    /// wattbit itself bypassed the adapter, as opposed to another tool.
     owns_adapter_cut: bool,
 }
 
@@ -323,7 +323,7 @@ impl Controller {
         Err(RpcError::new(
             ErrorKind::Conflict,
             format!(
-                "other charge limiters are controlling the same hardware: {}. berry will not \
+                "other charge limiters are controlling the same hardware: {}. wattbit will not \
                  fight them. Stop and remove them first:\n{}",
                 conflicts::summarize(&st.conflicts),
                 remedies.join("\n")
@@ -339,7 +339,7 @@ impl Controller {
     async fn reconcile_locked(&self, st: &mut State) {
         let mut errors = Vec::new();
 
-        // While another charge limiter runs, berry only observes; the
+        // While another charge limiter runs, wattbit only observes; the
         // status report carries the conflicts.
         self.refresh_conflicts(st).await;
         let paused = !st.conflicts.is_empty();
@@ -459,7 +459,7 @@ impl Controller {
                 && st.config.prevent_idle_sleep_when_charging
                 && charging_toward_limit,
             AssertionKind::PreventUserIdleSystemSleep,
-            "berry: charging toward the charge limit",
+            "wattbit: charging toward the charge limit",
             &mut errors,
         );
         sync_assertion(
@@ -468,7 +468,7 @@ impl Controller {
                 && st.config.prevent_system_sleep_when_charging
                 && charging_toward_limit,
             AssertionKind::PreventSystemSleep,
-            "berry: charging toward the charge limit",
+            "wattbit: charging toward the charge limit",
             &mut errors,
         );
         sync_assertion(
@@ -477,7 +477,7 @@ impl Controller {
                 && st.config.prevent_sleep_while_adapter_disabled
                 && st.adapter_enabled == Some(false),
             AssertionKind::PreventUserIdleSystemSleep,
-            "berry: power adapter disabled",
+            "wattbit: power adapter disabled",
             &mut errors,
         );
 
@@ -533,7 +533,7 @@ impl Controller {
     }
 
     /// Restores factory behaviour before the daemon exits. While another
-    /// charge limiter runs, only state berry itself set is undone.
+    /// charge limiter runs, only state wattbit itself set is undone.
     pub async fn shutdown(&self) {
         let mut st = self.state.lock().await;
         st.assertions = Assertions::default();
@@ -562,7 +562,7 @@ impl Controller {
                 errors.join("; ")
             );
         } else if foreign {
-            log!("undid berry's own changes; other charge limiters keep control");
+            log!("undid wattbit's own changes; other charge limiters keep control");
         } else {
             log!("factory charging behaviour restored");
         }
@@ -655,7 +655,7 @@ impl Controller {
         );
         if self.caps.adapter_control.is_usable() {
             message.push_str(
-                ". Adapter control is available: `sudo berry set adapter-fallback on` holds the \
+                ". Adapter control is available: `sudo wattbit set adapter-fallback on` holds the \
                  limit by running from the battery instead (this costs battery cycles)",
             );
         }
@@ -757,7 +757,7 @@ impl Controller {
             "Power adapter enabled.".to_owned()
         } else {
             format!(
-                "Power adapter disabled; the Mac now runs from its battery. berry re-enables \
+                "Power adapter disabled; the Mac now runs from its battery. wattbit re-enables \
                  the adapter automatically at {ADAPTER_SAFETY_FLOOR}%."
             )
         };

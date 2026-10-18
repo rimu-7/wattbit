@@ -1,10 +1,10 @@
-use berry::battery::{BatteryTelemetry, PowerSource};
-use berry::capabilities::{Capabilities, ChargeControlMode, HostInfo, Support};
-use berry::client::render_status;
-use berry::config::Config;
-use berry::conflicts::Conflict;
-use berry::policy::{ChargeState, Thresholds};
-use berry::protocol::{ChargingStatus, StatusReport};
+use wattbit::battery::{BatteryTelemetry, PowerSource};
+use wattbit::capabilities::{Capabilities, ChargeControlMode, HostInfo, Support};
+use wattbit::client::render_status;
+use wattbit::config::Config;
+use wattbit::conflicts::Conflict;
+use wattbit::policy::{ChargeState, Thresholds};
+use wattbit::protocol::{ChargingStatus, StatusReport};
 
 fn capabilities() -> Capabilities {
     Capabilities {
@@ -23,7 +23,7 @@ fn capabilities() -> Capabilities {
         adapter_control_keys: Some("CH0I".into()),
         magsafe_led: Support::unsupported("SMC key ACLC is not present"),
         sleep_hooks: Support::Supported,
-        calibration: Support::unsupported("berry does not implement automatic calibration"),
+        calibration: Support::unsupported("wattbit does not implement automatic calibration"),
         writes_verified: true,
         keys: Vec::new(),
     }
@@ -79,7 +79,7 @@ fn conflicts_explain_the_pause() {
     report.conflicts = vec![conflict(7125), conflict(7126)];
     let text = render_status(&report);
     assert!(text.contains(
-        "    Paused: batt (pids 7125, 7126) also controls charging. Run `berry doctor` to remove it.\n"
+        "    Paused: batt (pids 7125, 7126) also controls charging. Run `wattbit doctor` to remove it.\n"
     ));
 }
 
@@ -89,7 +89,7 @@ fn unsupported_mode_points_to_doctor() {
     report.mode = ChargeControlMode::Unsupported;
     report.charging.charging_allowed = None;
     let text = render_status(&report);
-    assert!(text.contains("    This Mac has no charge-inhibit SMC key; run `berry doctor`"));
+    assert!(text.contains("    This Mac has no charge-inhibit SMC key; run `wattbit doctor`"));
 }
 
 #[test]

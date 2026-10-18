@@ -1,4 +1,4 @@
-//! The `berry speed status` dashboard.
+//! The `wattbit speed status` dashboard.
 
 use std::fmt::Write as _;
 
@@ -45,12 +45,18 @@ pub fn render(status: &SpeedStatus) -> String {
             out.push_str("Usage: nothing recorded yet; the meter saves as traffic arrives.\n");
         }
         (None, None) => {
-            out.push_str("Usage: nothing recorded yet. Turn the meter on with `berry speed on`.\n");
+            out.push_str(
+                "Usage: nothing recorded yet. Turn the meter on with `wattbit speed on`.\n",
+            );
         }
     }
 
     if !status.running {
         out.push_str("\nThe meter is off, so no usage is being recorded.\n");
+    }
+    if let Some(notice) = &status.update {
+        out.push('\n');
+        out.push_str(&notice.render());
     }
     out
 }
@@ -157,6 +163,7 @@ mod tests {
                 average_upload_bytes: 750,
             }),
             warning: None,
+            update: None,
         };
         let text = render(&status);
         assert!(text.contains("Internet speed meter: off"));
@@ -187,6 +194,7 @@ mod tests {
             }),
             usage: None,
             warning: None,
+            update: None,
         };
         let text = render(&status);
         assert!(text.contains("Internet speed meter: on (pid 4711, since "));
@@ -204,8 +212,32 @@ mod tests {
             live: None,
             usage: None,
             warning: Some("cannot read /no/such/file: boom".into()),
+            update: None,
         };
         let text = render(&status);
         assert!(text.contains("Usage: unavailable: cannot read"));
+        assert!(!text.contains("Update available"));
+    }
+
+    #[test]
+    fn updates_come_with_the_command() {
+        let status = SpeedStatus {
+            running: false,
+            pid: None,
+            started_at: None,
+            live: None,
+            usage: None,
+            warning: None,
+            update: Some(crate::update::UpdateNotice {
+                current: "0.2.0".into(),
+                latest: "0.3.0".into(),
+                command: crate::update::INSTALL_COMMAND.into(),
+            }),
+        };
+        let text = render(&status);
+        assert!(text.ends_with(&format!(
+            "\nUpdate available: wattbit 0.3.0 (you have 0.2.0). To update, run:\n  {}\n",
+            crate::update::INSTALL_COMMAND
+        )));
     }
 }

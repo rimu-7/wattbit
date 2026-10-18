@@ -1,0 +1,68 @@
+name: Release
+
+# Push a tag such as v0.2.0 (matching Cargo.toml) to publish a release.
+# install.sh downloads the archive and checksum this produces, and running
+# wattbit agents offer the new version in their menu.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  ASSET: wattbit-macos-universal.tar.gz
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - run: cargo test --locked
+
+      - name: Build a universal binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir dist
+          lipo -create -output dist/wattbit \
+            target/aarch64-apple-darwin/release/wattbit \
+            target/x86_64-apple-darwin/release/wattbit
+          # Apple Silicon refuses to run unsigned code; an ad-hoc signature
+          # is enough for a command-line tool downloaded with curl.
+          codesign --force --sign - dist/wattbit
+          codesign --verify --verbose dist/wattbit
+          lipo -info dist/wattbit
+          test "$(dist/wattbit --version)" = "wattbit ${GITHUB_REF_NAME#v}"
+
+      - name: Package
+        working-directory: dist
+        run: |
+          tar -czf "$ASSET" wattbit
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/$ASSET" "dist/$ASSET.sha256" \
+            --title "wattbit ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag

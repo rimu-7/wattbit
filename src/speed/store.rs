@@ -106,7 +106,7 @@ impl UsageStore {
             return Err(StoreError::Corrupt {
                 path: path.to_path_buf(),
                 reason: format!(
-                    "unsupported version {} (this berry understands {STORE_VERSION})",
+                    "unsupported version {} (this wattbit understands {STORE_VERSION})",
                     store.version
                 ),
             });
@@ -201,6 +201,16 @@ impl UsageStore {
         }
     }
 
+    /// Adds every record of `other` into this store, summing days both
+    /// contain. Records with an invalid date are skipped.
+    pub fn merge(&mut self, other: &UsageStore) {
+        for day in &other.days {
+            if let Some(date) = LocalDate::parse(&day.date) {
+                self.add(date, day.download_bytes, day.upload_bytes);
+            }
+        }
+    }
+
     /// Deletes records older than the retention window. Returns how many
     /// were removed.
     pub fn prune(&mut self, today: LocalDate) -> usize {
@@ -238,7 +248,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("berry-store-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wattbit-store-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

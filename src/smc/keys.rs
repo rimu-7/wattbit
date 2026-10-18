@@ -1,6 +1,6 @@
-//! SMC key identifiers and the exact byte patterns berry writes to them.
+//! SMC key identifiers and the exact byte patterns wattbit writes to them.
 //!
-//! berry never interprets multi-byte control values numerically. Each
+//! wattbit never interprets multi-byte control values numerically. Each
 //! control is described by the literal bytes for its two states, which keeps
 //! writes independent of host and SMC byte order.
 
@@ -189,14 +189,14 @@ impl LedMode {
     }
 }
 
-/// A key berry probes, with a short description for diagnostics.
+/// A key wattbit probes, with a short description for diagnostics.
 #[derive(Debug, Clone, Copy)]
 pub struct KeyDescriptor {
     pub key: FourCC,
     pub purpose: &'static str,
 }
 
-/// Every key berry knows about, in the order diagnostics list them.
+/// Every key wattbit knows about, in the order diagnostics list them.
 pub const KNOWN_KEYS: &[KeyDescriptor] = &[
     KeyDescriptor {
         key: CHTE,

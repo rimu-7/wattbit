@@ -12,9 +12,9 @@ use crate::{CONFIG_PATH, SOCKET_PATH};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "berry",
+    name = "wattbit",
     version,
-    about = "Battery charge limiting, power adapter control and battery telemetry for macOS",
+    about = "Battery charge limiting and a menu bar internet speed meter for macOS",
     propagate_version = true
 )]
 pub struct Cli {
@@ -99,7 +99,7 @@ pub enum SpeedCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Run the sampling agent (this is what `berry speed on` starts).
+    /// Run the sampling agent (this is what `wattbit speed on` starts).
     #[command(hide = true)]
     Agent {
         /// Record usage without creating the menu bar item.
@@ -176,7 +176,7 @@ pub fn parse_limit_target(text: &str) -> Result<LimitTarget, String> {
     Ok(LimitTarget::Percent(value))
 }
 
-/// A validated `berry limit` request.
+/// A validated `wattbit limit` request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitRequest {
     Set(Thresholds),

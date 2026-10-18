@@ -5,9 +5,12 @@
 //!
 //! Loading uses `/bin/launchctl`: macOS has no supported C API that lets a
 //! command-line tool bootstrap a system LaunchDaemon (`SMJobBless` is
-//! deprecated and `SMAppService` requires an app bundle). This is the only
-//! external process berry runs, and none of the battery functionality
-//! depends on it.
+//! deprecated and `SMAppService` requires an app bundle). None of the
+//! battery functionality depends on it.
+//!
+//! Installing doubles as updating: the old daemon is stopped (restoring
+//! factory charging), the new binary takes its place, and the install only
+//! reports success once the new daemon answers on its socket.
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::{self, Write};
@@ -20,18 +23,32 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 
-use crate::conflicts;
-use crate::CONFIG_PATH;
+use crate::client::Client;
+use crate::legacy::{self, OldSettings};
+use crate::protocol::{Call, DaemonDiagnostics, Reply};
+use crate::{conflicts, CONFIG_PATH, SOCKET_PATH};
 
-pub const LABEL: &str = "com.berry.daemon";
-pub const PLIST_PATH: &str = "/Library/LaunchDaemons/com.berry.daemon.plist";
-pub const INSTALLED_BINARY: &str = "/Library/PrivilegedHelperTools/berryd";
-pub const LOG_PATH: &str = "/var/log/berry.log";
-/// Symlink that puts the `berry` command on the default PATH.
-pub const CLI_LINK: &str = "/usr/local/bin/berry";
+pub const LABEL: &str = "com.wattbit.daemon";
+pub const PLIST_PATH: &str = "/Library/LaunchDaemons/com.wattbit.daemon.plist";
+pub const INSTALLED_BINARY: &str = "/Library/PrivilegedHelperTools/wattbitd";
+pub const LOG_PATH: &str = "/var/log/wattbit.log";
+/// Symlink that puts the `wattbit` command on the default PATH.
+pub const CLI_LINK: &str = "/usr/local/bin/wattbit";
 
 const LAUNCHCTL: &str = "/bin/launchctl";
 const LAUNCHCTL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a booted-out job may stay listed before giving up on it.
+const BOOTOUT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `launchctl bootstrap` fails with "5: Input/output error" while launchd
+/// is still tearing down a job of the same label, which is common right
+/// after an update's bootout. It is retried this many times, a second apart.
+const BOOTSTRAP_ATTEMPTS: u32 = 5;
+
+/// How long a freshly started daemon may take to probe the hardware and
+/// open its socket.
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Renders the LaunchDaemon property list for `binary`.
 pub fn plist(binary: &Path) -> String {
@@ -87,7 +104,7 @@ pub(crate) fn xml_escape(text: &str) -> String {
 fn require_root(command: &str) -> anyhow::Result<()> {
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
-        bail!("`berry {command}` must be run as root (use sudo)");
+        bail!("`wattbit {command}` must be run as root (use sudo)");
     }
     Ok(())
 }
@@ -133,8 +150,67 @@ fn service_target() -> String {
     format!("system/{LABEL}")
 }
 
-fn is_loaded() -> anyhow::Result<bool> {
-    Ok(launchctl(&["print", &service_target()])?.status.success())
+/// Whether launchd knows the job `target` (`system/LABEL`, `gui/UID/LABEL`).
+pub(crate) fn loaded(target: &str) -> anyhow::Result<bool> {
+    Ok(launchctl(&["print", target])?.status.success())
+}
+
+/// Unloads `target` and waits until launchd has let go of it, so a job of
+/// the same label can be bootstrapped right away.
+pub(crate) fn bootout(target: &str) -> anyhow::Result<()> {
+    let output = launchctl(&["bootout", target])?;
+    let deadline = std::time::Instant::now() + BOOTOUT_TIMEOUT;
+    while loaded(target)? {
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "`launchctl bootout {target}` did not unload the job ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
+}
+
+/// Loads `plist` into `domain`, retrying while launchd finishes unloading
+/// an earlier instance.
+pub(crate) fn bootstrap(domain: &str, plist: &str) -> anyhow::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match launchctl_checked(&["bootstrap", domain, plist]) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt >= BOOTSTRAP_ATTEMPTS => return Err(e),
+            Err(_) => {
+                attempt += 1;
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+/// Waits for the daemon to answer on its socket.
+fn wait_for_daemon(timeout: Duration) -> anyhow::Result<DaemonDiagnostics> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = Client::new(SOCKET_PATH);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let last_error = match runtime.block_on(client.call(Call::Doctor)) {
+            Ok(Reply::Diagnostics(diagnostics)) => return Ok(*diagnostics),
+            Ok(_) => "unexpected reply".to_owned(),
+            Err(e) => e.to_string(),
+        };
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "the service is installed, but the daemon did not answer within {} s \
+                 ({last_error}). See the log: tail -50 {LOG_PATH}",
+                timeout.as_secs()
+            );
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Ensures `dir` exists and only root can write to it.
@@ -189,7 +265,8 @@ fn remove_if_present(path: &Path) -> anyhow::Result<bool> {
     }
 }
 
-/// Installs the binary and LaunchDaemon plist, then loads the service.
+/// Installs (or updates) the binary and LaunchDaemon plist, moves a berry
+/// installation over, then loads the service and waits for it to answer.
 pub fn install() -> anyhow::Result<String> {
     require_root("install-service")?;
     let current = std::env::current_exe()
@@ -197,10 +274,14 @@ pub fn install() -> anyhow::Result<String> {
         .context("locating the running executable")?;
     let installed = PathBuf::from(INSTALLED_BINARY);
 
-    if is_loaded()? {
+    let target = service_target();
+    if loaded(&target)? {
         // The running daemon restores factory charging on SIGTERM.
-        launchctl_checked(&["bootout", &service_target()])?;
+        bootout(&target)?;
     }
+    // Before the new daemon starts, so it starts with the old settings and
+    // never runs alongside berryd.
+    let migrated = legacy::clean_system(OldSettings::MoveTo(Path::new(CONFIG_PATH)))?;
 
     if current != installed {
         let binary =
@@ -211,19 +292,34 @@ pub fn install() -> anyhow::Result<String> {
     let cli = link_cli()?;
 
     // A previous `launchctl disable` would make bootstrap fail.
-    launchctl_checked(&["enable", &service_target()])?;
-    launchctl_checked(&["bootstrap", "system", PLIST_PATH])?;
+    launchctl_checked(&["enable", &target])?;
+    bootstrap("system", PLIST_PATH)?;
+    let daemon = wait_for_daemon(DAEMON_READY_TIMEOUT)?;
 
     let mut summary = format!(
-        "Installed {INSTALLED_BINARY} and {PLIST_PATH}; the daemon is running.\n\
+        "wattbit {} is installed and its daemon is running (pid {}).\n\
          {cli}\n\
-         Logs: {LOG_PATH}. Check it with `berry status`."
+         Logs: {LOG_PATH}. Check it with `wattbit status`.",
+        daemon.version, daemon.pid
     );
+    if daemon.version != env!("CARGO_PKG_VERSION") {
+        summary.push_str(&format!(
+            "\n\nWarning: this installer is wattbit {}, but the daemon reports {}.",
+            env!("CARGO_PKG_VERSION"),
+            daemon.version
+        ));
+    }
+    if !migrated.is_empty() {
+        summary.push_str("\n\nMoved over from berry (wattbit's old name):");
+        for line in &migrated {
+            summary.push_str(&format!("\n  - {line}"));
+        }
+    }
     let others = conflicts::running();
     if !others.is_empty() {
         summary.push_str(&format!(
-            "\n\nWarning: {} also {} charging, so berry stays paused until {} \
-             removed. Run `berry doctor` for the exact removal commands.",
+            "\n\nWarning: {} also {} charging, so wattbit stays paused until {} \
+             removed. Run `wattbit doctor` for the exact removal commands.",
             conflicts::summarize(&others),
             conflicts::agree(&others, "controls", "control"),
             conflicts::agree(&others, "it is", "they are"),
@@ -232,8 +328,8 @@ pub fn install() -> anyhow::Result<String> {
     Ok(summary)
 }
 
-/// Links [`CLI_LINK`] to the installed binary so `berry` is on the PATH.
-/// An existing file that is not berry's link is left alone.
+/// Links [`CLI_LINK`] to the installed binary so `wattbit` is on the PATH.
+/// An existing file that is not wattbit's link is left alone.
 fn link_cli() -> anyhow::Result<String> {
     let link = Path::new(CLI_LINK);
     match fs::symlink_metadata(link) {
@@ -241,11 +337,11 @@ fn link_cli() -> anyhow::Result<String> {
             let ours = meta.file_type().is_symlink()
                 && fs::read_link(link).is_ok_and(|target| target == Path::new(INSTALLED_BINARY));
             return Ok(if ours {
-                format!("The `berry` command is available at {CLI_LINK}.")
+                format!("The `wattbit` command is available at {CLI_LINK}.")
             } else {
                 format!(
-                    "{CLI_LINK} already exists and is not berry's; left it unchanged. \
-                     Run berry as {INSTALLED_BINARY} instead."
+                    "{CLI_LINK} already exists and is not wattbit's; left it unchanged. \
+                     Run wattbit as {INSTALLED_BINARY} instead."
                 )
             });
         }
@@ -260,11 +356,11 @@ fn link_cli() -> anyhow::Result<String> {
     std::os::unix::fs::symlink(INSTALLED_BINARY, link)
         .with_context(|| format!("linking {CLI_LINK}"))?;
     Ok(format!(
-        "The `berry` command is now available at {CLI_LINK}."
+        "The `wattbit` command is now available at {CLI_LINK}."
     ))
 }
 
-/// Removes [`CLI_LINK`] if it is berry's link.
+/// Removes [`CLI_LINK`] if it is wattbit's link.
 fn unlink_cli() -> anyhow::Result<bool> {
     let link = Path::new(CLI_LINK);
     let ours = fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
@@ -280,8 +376,9 @@ fn unlink_cli() -> anyhow::Result<bool> {
 pub fn uninstall(purge: bool) -> anyhow::Result<String> {
     require_root("uninstall-service")?;
     let mut done = Vec::new();
-    if is_loaded()? {
-        launchctl_checked(&["bootout", &service_target()])?;
+    let target = service_target();
+    if loaded(&target)? {
+        bootout(&target)?;
         done.push("stopped the daemon (factory charging restored)".to_owned());
     }
     if remove_if_present(Path::new(PLIST_PATH))? {
@@ -296,8 +393,13 @@ pub fn uninstall(purge: bool) -> anyhow::Result<String> {
     if purge && remove_if_present(Path::new(CONFIG_PATH))? {
         done.push(format!("removed {CONFIG_PATH}"));
     }
+    done.extend(legacy::clean_system(if purge {
+        OldSettings::Delete
+    } else {
+        OldSettings::Keep
+    })?);
     if done.is_empty() {
-        return Ok("The berry service was not installed; nothing to do.".into());
+        return Ok("The wattbit service was not installed; nothing to do.".into());
     }
     let mut summary = done.join("\n");
     if !purge && Path::new(CONFIG_PATH).exists() {
@@ -316,8 +418,8 @@ mod tests {
     fn plist_is_well_formed() {
         let text = plist(Path::new(INSTALLED_BINARY));
         assert!(text.starts_with("<?xml"));
-        assert!(text.contains("<string>com.berry.daemon</string>"));
-        assert!(text.contains("<string>/Library/PrivilegedHelperTools/berryd</string>"));
+        assert!(text.contains("<string>com.wattbit.daemon</string>"));
+        assert!(text.contains("<string>/Library/PrivilegedHelperTools/wattbitd</string>"));
         assert!(text.contains("<string>daemon</string>\n\t\t<string>run</string>"));
         assert_eq!(
             text.matches("<dict>").count(),
@@ -331,7 +433,7 @@ mod tests {
 
     #[test]
     fn plist_escapes_paths() {
-        let text = plist(Path::new("/opt/a&b/<berry>"));
-        assert!(text.contains("<string>/opt/a&amp;b/&lt;berry&gt;</string>"));
+        let text = plist(Path::new("/opt/a&b/<wattbit>"));
+        assert!(text.contains("<string>/opt/a&amp;b/&lt;wattbit&gt;</string>"));
     }
 }

@@ -5,9 +5,9 @@
 //! cargo test --test hardware -- --ignored --nocapture
 //! ```
 
-use berry::battery;
-use berry::capabilities;
-use berry::conflicts;
+use wattbit::battery;
+use wattbit::capabilities;
+use wattbit::conflicts;
 
 #[test]
 #[ignore = "inspects this machine's processes"]
@@ -20,7 +20,7 @@ fn report_other_charge_limiters() {
         println!("installed {}: {}", c.tool, c.detail);
     }
 }
-use berry::smc::{keys, Smc, SmcError};
+use wattbit::smc::{keys, Smc, SmcError};
 
 #[test]
 #[ignore = "touches real hardware"]

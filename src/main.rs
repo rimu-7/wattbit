@@ -3,13 +3,13 @@ use std::process::ExitCode;
 use anyhow::anyhow;
 use clap::Parser;
 
-use berry::cli::{Cli, Command, DaemonCommand, SpeedCommand, Switch, Toggle};
-use berry::client::{render_status, Client, ClientError};
-use berry::daemon::{self, DaemonOptions};
-use berry::protocol::{Call, ErrorKind, Reply};
-use berry::speed::agent::{AgentOptions, SpeedPaths};
-use berry::speed::{agent, render, status};
-use berry::{doctor, service};
+use wattbit::cli::{Cli, Command, DaemonCommand, SpeedCommand, Switch, Toggle};
+use wattbit::client::{render_status, Client, ClientError};
+use wattbit::daemon::{self, DaemonOptions};
+use wattbit::protocol::{Call, ErrorKind, Reply};
+use wattbit::speed::agent::{AgentOptions, SpeedPaths};
+use wattbit::speed::{agent, render, status};
+use wattbit::{doctor, service, update};
 
 /// Exit status when the hardware does not support the request.
 const EXIT_UNSUPPORTED: u8 = 3;
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("berry: {e:#}");
+            eprintln!("wattbit: {e:#}");
             let code = match e.downcast_ref::<ClientError>() {
                 Some(ClientError::Rpc(rpc)) => match rpc.kind() {
                     ErrorKind::Unsupported => EXIT_UNSUPPORTED,
@@ -68,6 +68,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
                     print!("{}", render_status(&report));
+                    let notice = SpeedPaths::resolve()
+                        .ok()
+                        .and_then(|paths| update::pending(&paths.dir));
+                    if let Some(notice) = notice {
+                        print!("\n{}", notice.render());
+                    }
                 }
                 Ok(ExitCode::SUCCESS)
             }
@@ -125,7 +131,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Routes `berry speed`; none of it needs the daemon or root.
+/// Routes `wattbit speed`; none of it needs the daemon or root.
 fn speed_command(command: SpeedCommand) -> anyhow::Result<ExitCode> {
     let paths = SpeedPaths::resolve()?;
     match command {

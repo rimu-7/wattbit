@@ -1,4 +1,4 @@
-//! The privileged daemon (`berry daemon run`, installed as `berryd`).
+//! The privileged daemon (`wattbit daemon run`, installed as `wattbitd`).
 //!
 //! Owns all hardware access. Serves JSON-RPC requests on a Unix socket,
 //! re-evaluates the charge policy every [`EVALUATION_INTERVAL`] and on
@@ -8,7 +8,7 @@
 macro_rules! log {
     ($($arg:tt)*) => {
         eprintln!(
-            "{} berryd[{}]: {}",
+            "{} wattbitd[{}]: {}",
             $crate::daemon::timestamp(),
             std::process::id(),
             format_args!($($arg)*)

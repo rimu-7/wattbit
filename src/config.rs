@@ -1,4 +1,4 @@
-//! Persistent configuration, stored as JSON at `/etc/berry.json`.
+//! Persistent configuration, stored as JSON at `/etc/wattbit.json`.
 //!
 //! Writes are atomic: the new contents go to a temporary file in the same
 //! directory, which is fsynced and renamed over the old file, and then the
@@ -57,7 +57,7 @@ impl Default for Config {
     }
 }
 
-/// A boolean setting that can be changed with `berry set`.
+/// A boolean setting that can be changed with `wattbit set`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConfigOption {
@@ -110,7 +110,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if self.version == 0 || self.version > CONFIG_VERSION {
             return Err(format!(
-                "unsupported config version {} (this berry understands {CONFIG_VERSION})",
+                "unsupported config version {} (this wattbit understands {CONFIG_VERSION})",
                 self.version
             ));
         }
@@ -124,7 +124,7 @@ pub enum ConfigError {
     Read { path: PathBuf, source: io::Error },
     #[error("cannot write {}: {source}", path.display())]
     Write { path: PathBuf, source: io::Error },
-    #[error("{} is not valid berry configuration: {source}", path.display())]
+    #[error("{} is not valid wattbit configuration: {source}", path.display())]
     Parse {
         path: PathBuf,
         source: serde_json::Error,

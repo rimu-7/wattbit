@@ -1,4 +1,4 @@
-use berry::policy::{
+use wattbit::policy::{
     adapter_must_be_restored, next_state, ChargeLimiter, ChargeState, PolicyError, Thresholds,
     ADAPTER_SAFETY_FLOOR,
 };

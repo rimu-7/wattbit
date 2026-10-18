@@ -1,4 +1,4 @@
-//! The sampling agent behind `berry speed on`.
+//! The sampling agent behind `wattbit speed on`.
 //!
 //! The agent runs inside the user's login session (as a LaunchAgent, or
 //! spawned directly when launchd is unavailable). Its main thread owns the
@@ -8,7 +8,9 @@
 //! process is signalled or the menu's *Turn off* item is clicked.
 //!
 //! Usage data is flushed to disk every [`SAVE_INTERVAL`] and on exit; the
-//! menu bar updates every tick from memory.
+//! menu bar updates every tick from memory. The agent also checks for new
+//! wattbit releases (see [`crate::update`]) on a thread of its own, so a
+//! slow network never delays a sample.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -31,13 +33,14 @@ use super::date::{self, LocalDate};
 use super::sampler::{self, Counters};
 use super::store::{UsageStore, RETENTION_DAYS};
 use super::{menubar, stop_requested, Display};
-use crate::service;
+use crate::update::{self, UpdateCache, Version};
+use crate::{legacy, service};
 
 /// Writes a timestamped line to stderr (captured by launchd into the log).
 macro_rules! log {
     ($($arg:tt)*) => {
         eprintln!(
-            "{} berry-speed[{}]: {}",
+            "{} wattbit-speed[{}]: {}",
             crate::daemon::timestamp(),
             std::process::id(),
             format_args!($($arg)*)
@@ -46,7 +49,7 @@ macro_rules! log {
 }
 
 /// LaunchAgent label.
-pub const LABEL: &str = "com.berry.speed";
+pub const LABEL: &str = "com.wattbit.speed";
 
 /// Sampling interval used when none is given.
 pub const DEFAULT_INTERVAL_SECONDS: f64 = 1.0;
@@ -101,12 +104,12 @@ pub struct SpeedPaths {
 }
 
 impl SpeedPaths {
-    /// Resolves the data directory: `$BERRY_SPEED_DIR` when set (used by
-    /// tests and unusual setups), otherwise `~/Library/Application Support/berry`.
+    /// Resolves the data directory: `$WATTBIT_SPEED_DIR` when set (used by
+    /// tests and unusual setups), otherwise `~/Library/Application Support/wattbit`.
     pub fn resolve() -> anyhow::Result<Self> {
-        let dir = match std::env::var_os("BERRY_SPEED_DIR") {
+        let dir = match std::env::var_os("WATTBIT_SPEED_DIR") {
             Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => home()?.join("Library/Application Support/berry"),
+            _ => home()?.join("Library/Application Support/wattbit"),
         };
         Ok(Self {
             store: dir.join("speed.json"),
@@ -125,7 +128,7 @@ impl SpeedPaths {
     }
 }
 
-fn home() -> anyhow::Result<PathBuf> {
+pub(crate) fn home() -> anyhow::Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
@@ -141,10 +144,13 @@ pub fn ensure_dir(paths: &SpeedPaths) -> anyhow::Result<()> {
 }
 
 /// The agent's pid file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PidFile {
     pub pid: u32,
     pub started_at: i64,
+    /// The wattbit version the agent runs; missing in files from 0.1.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 impl PidFile {
@@ -153,7 +159,7 @@ impl PidFile {
     }
 
     /// Creates the pid file. `Ok(false)` means it already existed.
-    fn create(path: &Path, contents: Self) -> io::Result<bool> {
+    fn create(path: &Path, contents: &Self) -> io::Result<bool> {
         match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -170,11 +176,15 @@ impl PidFile {
     }
 
     /// The file's contents as JSON.
-    fn to_json(self) -> String {
-        format!(
-            "{{\"pid\":{},\"started_at\":{}}}\n",
-            self.pid, self.started_at
-        )
+    fn to_json(&self) -> String {
+        let mut json = serde_json::to_string(self).unwrap_or_default();
+        json.push('\n');
+        json
+    }
+
+    /// Whether the agent runs this very build.
+    fn is_current(&self) -> bool {
+        self.version.as_deref() == Some(env!("CARGO_PKG_VERSION"))
     }
 }
 
@@ -208,7 +218,7 @@ pub fn process_alive(pid: u32) -> bool {
     rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-fn executable_of(pid: u32) -> Option<PathBuf> {
+pub(crate) fn executable_of(pid: u32) -> Option<PathBuf> {
     let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     // SAFETY: `buffer` is writable and `buffer.len()` names its size.
     let len = unsafe {
@@ -231,7 +241,7 @@ fn current_binary() -> Option<PathBuf> {
         .and_then(|path| path.canonicalize().ok())
 }
 
-/// The agent owning the pid file, if it is alive and really berry.
+/// The agent owning the pid file, if it is alive and really wattbit.
 pub fn live_agent(paths: &SpeedPaths) -> Option<PidFile> {
     let pid_file = PidFile::read(&paths.pid)?;
     if !process_alive(pid_file.pid) {
@@ -248,7 +258,7 @@ pub fn live_agent(paths: &SpeedPaths) -> Option<PidFile> {
 }
 
 /// Asks a process to stop, escalating to SIGKILL after `timeout`.
-fn terminate(pid: u32, timeout: Duration) -> bool {
+pub(crate) fn terminate(pid: u32, timeout: Duration) -> bool {
     for (signal, wait) in [
         (libc::SIGTERM, timeout),
         (libc::SIGKILL, Duration::from_secs(2)),
@@ -256,7 +266,7 @@ fn terminate(pid: u32, timeout: Duration) -> bool {
         if !process_alive(pid) {
             return true;
         }
-        // SAFETY: the pid comes from berry's own pid file, and we verified
+        // SAFETY: the pid comes from wattbit's own pid file, and we verified
         // its executable path before calling.
         unsafe { libc::kill(pid as libc::pid_t, signal) };
         let deadline = Instant::now() + wait;
@@ -270,15 +280,36 @@ fn terminate(pid: u32, timeout: Duration) -> bool {
     !process_alive(pid)
 }
 
-/// `berry speed on`: starts the meter and prints what happened.
+/// `wattbit speed on`: starts the meter and prints what happened. A meter
+/// left running by an older wattbit (or by berry) is replaced, which is how
+/// updates restart it.
 pub fn on(paths: &SpeedPaths, no_launchd: bool) -> anyhow::Result<String> {
     ensure_user("on")?;
+    let migrated = legacy::clean_user(&home()?, paths);
     ensure_dir(paths)?;
+    let mut replaced = None;
     if let Some(agent) = live_agent(paths) {
-        return Ok(format!(
-            "The speed meter is already on (pid {}).",
-            agent.pid
-        ));
+        if agent.is_current() {
+            return Ok(with_migration(
+                format!("The speed meter is already on (pid {}).", agent.pid),
+                &migrated,
+            ));
+        }
+        // An update replaced the binary under a running agent.
+        if launchd_loaded()? {
+            bootout()?;
+        }
+        if process_alive(agent.pid) && !terminate(agent.pid, STOP_TIMEOUT) {
+            bail!(
+                "the outdated speed meter (pid {}) did not stop; try `kill -9 {}`",
+                agent.pid,
+                agent.pid
+            );
+        }
+        replaced = Some(match agent.version {
+            Some(version) => format!("wattbit {version}"),
+            None => "an older version".to_owned(),
+        });
     }
     remove_leftovers(paths);
 
@@ -304,24 +335,43 @@ pub fn on(paths: &SpeedPaths, no_launchd: bool) -> anyhow::Result<String> {
     }
     let agent = wait_for_agent(paths, START_TIMEOUT)?;
 
-    let mut message = format!(
-        "Speed meter on (pid {}). The menu bar now shows the current ↓/↑ rates.",
-        agent.pid
-    );
+    let mut message = match replaced {
+        Some(previous) => format!(
+            "Speed meter restarted on wattbit {} (pid {}; it was running {previous}).",
+            env!("CARGO_PKG_VERSION"),
+            agent.pid
+        ),
+        None => format!(
+            "Speed meter on (pid {}). The menu bar now shows the current ↓/↑ rates.",
+            agent.pid
+        ),
+    };
     if via_login_item {
         message.push_str(" It starts again automatically at login.");
     }
     message.push_str(&format!(
-        " Turn it off with `berry speed off`.\n\
+        " Turn it off with `wattbit speed off`.\n\
          Usage is recorded in {} and kept for {RETENTION_DAYS} days.",
         paths.store.display()
     ));
-    Ok(message)
+    Ok(with_migration(message, &migrated))
 }
 
-/// `berry speed off`: stops the meter, keeping the usage history.
+/// Appends what moving off berry did, if anything.
+fn with_migration(mut message: String, migrated: &[String]) -> String {
+    if !migrated.is_empty() {
+        message.push_str("\nMoved over from berry (wattbit's old name):");
+        for line in migrated {
+            message.push_str(&format!("\n  - {line}"));
+        }
+    }
+    message
+}
+
+/// `wattbit speed off`: stops the meter, keeping the usage history.
 pub fn off(paths: &SpeedPaths) -> anyhow::Result<String> {
     ensure_user("off")?;
+    let migrated = legacy::clean_user(&home()?, paths);
     let mut done = Vec::new();
     if launchd_loaded()? {
         bootout()?;
@@ -356,9 +406,12 @@ pub fn off(paths: &SpeedPaths) -> anyhow::Result<String> {
     } else {
         format!("Speed meter off: {}.", done.join(", "))
     };
-    Ok(format!(
-        "{summary}\nUsage history is kept in {} and is deleted automatically after {RETENTION_DAYS} days.",
-        paths.store.display()
+    Ok(with_migration(
+        format!(
+            "{summary}\nUsage history is kept in {} and is deleted automatically after {RETENTION_DAYS} days.",
+            paths.store.display()
+        ),
+        &migrated,
     ))
 }
 
@@ -366,7 +419,7 @@ fn ensure_user(command: &str) -> anyhow::Result<()> {
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } == 0 {
         bail!(
-            "`berry speed {command}` runs in your own login session and must not run as root; \
+            "`wattbit speed {command}` runs in your own login session and must not run as root; \
              re-run it without sudo"
         );
     }
@@ -400,13 +453,11 @@ fn launchd_target() -> String {
 }
 
 fn launchd_loaded() -> anyhow::Result<bool> {
-    Ok(service::launchctl(&["print", &launchd_target()])?
-        .status
-        .success())
+    service::loaded(&launchd_target())
 }
 
 fn bootout() -> anyhow::Result<()> {
-    service::launchctl_checked(&["bootout", &launchd_target()])
+    service::bootout(&launchd_target())
 }
 
 /// Renders the LaunchAgent property list for `binary`.
@@ -414,7 +465,16 @@ fn bootout() -> anyhow::Result<()> {
 /// `RunAtLoad` starts the meter at login; `KeepAlive` restarts it if it
 /// crashes (an unsuccessful exit) but not after a clean stop — the menu's
 /// *Turn off* item exits with status 0, and the job must stay down then.
-pub fn plist(binary: &Path, log: &Path) -> String {
+/// With `update_checks` off, the job carries `WATTBIT_NO_UPDATE_CHECK=1`.
+pub fn plist(binary: &Path, log: &Path, update_checks: bool) -> String {
+    let environment = if update_checks {
+        String::new()
+    } else {
+        format!(
+            "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>{}</key>\n\t\t<string>1</string>\n\t</dict>\n",
+            update::DISABLE_ENV
+        )
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -445,7 +505,7 @@ pub fn plist(binary: &Path, log: &Path) -> String {
 	<string>{log}</string>
 	<key>StandardErrorPath</key>
 	<string>{log}</string>
-</dict>
+{environment}</dict>
 </plist>
 "#,
         label = service::xml_escape(LABEL),
@@ -523,10 +583,14 @@ fn start_via_launchd(paths: &SpeedPaths) -> anyhow::Result<()> {
     if launchd_loaded()? {
         bootout()?;
     }
-    write_file(&plist_path, plist(&binary, &paths.log).as_bytes(), 0o644)?;
+    write_file(
+        &plist_path,
+        plist(&binary, &paths.log, update::checks_enabled()).as_bytes(),
+        0o644,
+    )?;
     let target = launchd_target();
     service::launchctl_checked(&["enable", &target])?;
-    service::launchctl_checked(&["bootstrap", &domain(), &plist_path.to_string_lossy()])?;
+    service::bootstrap(&domain(), &plist_path.to_string_lossy())?;
     wait_for_agent(paths, START_TIMEOUT)
         .context("launchd accepted the job but the agent did not start")?;
     Ok(())
@@ -546,14 +610,16 @@ fn start_direct(paths: &SpeedPaths) -> anyhow::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
-    if let Some(dir) = std::env::var_os("BERRY_SPEED_DIR") {
-        command.env("BERRY_SPEED_DIR", dir);
+    if let Some(dir) = std::env::var_os("WATTBIT_SPEED_DIR") {
+        command.env("WATTBIT_SPEED_DIR", dir);
     }
-    if let Some(no_gui) = std::env::var_os("BERRY_SPEED_NO_GUI") {
-        command.env("BERRY_SPEED_NO_GUI", no_gui);
+    for variable in ["WATTBIT_SPEED_NO_GUI", update::DISABLE_ENV] {
+        if let Some(value) = std::env::var_os(variable) {
+            command.env(variable, value);
+        }
     }
     // Detach from the controlling terminal so closing the terminal that
-    // ran `berry speed on` does not stop the meter.
+    // ran `wattbit speed on` does not stop the meter.
     // SAFETY: setsid only affects the child between fork and exec.
     unsafe {
         command.pre_exec(|| {
@@ -605,7 +671,7 @@ pub fn live_state(paths: &SpeedPaths) -> Option<LiveState> {
     serde_json::from_str(line.trim()).ok()
 }
 
-/// A one-shot sample for `berry speed agent --once` and the tests. Does not
+/// A one-shot sample for `wattbit speed agent --once` and the tests. Does not
 /// touch the pid file, the socket or the menu bar.
 pub fn sample_once(paths: &SpeedPaths, interval: f64) -> anyhow::Result<LiveState> {
     ensure_dir(paths)?;
@@ -652,12 +718,13 @@ fn claim(paths: &SpeedPaths) -> anyhow::Result<PidGuard> {
     let me = PidFile {
         pid: std::process::id(),
         started_at: date::now_unix(),
+        version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     };
     let guard = PidGuard {
         path: paths.pid.clone(),
         pid: me.pid,
     };
-    match PidFile::create(&paths.pid, me) {
+    match PidFile::create(&paths.pid, &me) {
         Ok(true) => Ok(guard),
         Ok(false) => {
             if let Some(existing) = live_agent(paths) {
@@ -670,7 +737,7 @@ fn claim(paths: &SpeedPaths) -> anyhow::Result<PidGuard> {
                 }
             }
             let _ = fs::remove_file(&paths.pid);
-            PidFile::create(&paths.pid, me).context("writing the pid file")?;
+            PidFile::create(&paths.pid, &me).context("writing the pid file")?;
             Ok(guard)
         }
         Err(e) => Err(e).context("writing the pid file"),
@@ -691,6 +758,58 @@ struct AgentState {
     started_at: i64,
     interval: f64,
     save_errors_logged: bool,
+    update: UpdateCheck,
+}
+
+/// The release check's schedule and its latest finding.
+#[derive(Debug)]
+struct UpdateCheck {
+    /// `None` when checks are turned off.
+    cache_path: Option<PathBuf>,
+    /// A release newer than this build, if one is known.
+    available: Option<Version>,
+    next_check: Instant,
+    running: bool,
+    /// Failures are logged once until a check succeeds again.
+    failure_logged: bool,
+}
+
+impl UpdateCheck {
+    /// Picks up the cached answer and schedules the next check: right after
+    /// [`update::STARTUP_DELAY`] when the cache is missing or stale,
+    /// otherwise when it expires.
+    fn new(data_dir: &Path, enabled: bool) -> Self {
+        let cache_path = update::cache_path(data_dir);
+        let cache = update::read_cache(&cache_path);
+        let now = Instant::now();
+        let age = cache.as_ref().map(|cache| {
+            Duration::from_secs(u64::try_from(date::now_unix() - cache.checked_at).unwrap_or(0))
+        });
+        let next_check = match age {
+            Some(age) if age < update::CHECK_INTERVAL => {
+                now + (update::CHECK_INTERVAL - age).max(update::STARTUP_DELAY)
+            }
+            _ => now + update::STARTUP_DELAY,
+        };
+        Self {
+            available: cache.as_ref().and_then(UpdateCache::newer_than_current),
+            cache_path: enabled.then_some(cache_path),
+            next_check,
+            running: false,
+            failure_logged: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            cache_path: None,
+            available: None,
+            next_check: Instant::now(),
+            running: false,
+            failure_logged: false,
+        }
+    }
 }
 
 impl AgentState {
@@ -722,6 +841,7 @@ impl AgentState {
             today_upload_bytes: today_up,
             window_download_bytes: window_down,
             window_upload_bytes: window_up,
+            update: self.update.available,
         }
     }
 
@@ -767,7 +887,7 @@ impl AgentState {
     }
 }
 
-/// Runs the agent until it is signalled. This is the process `berry speed
+/// Runs the agent until it is signalled. This is the process `wattbit speed
 /// on` leaves behind.
 pub fn run(paths: &SpeedPaths, options: AgentOptions) -> anyhow::Result<()> {
     ensure_dir(paths)?;
@@ -781,7 +901,7 @@ pub fn run(paths: &SpeedPaths, options: AgentOptions) -> anyhow::Result<()> {
         log!("deleted {pruned} usage record(s) outside the {RETENTION_DAYS}-day window");
     }
 
-    let headless = options.headless || std::env::var_os("BERRY_SPEED_NO_GUI").is_some();
+    let headless = options.headless || std::env::var_os("WATTBIT_SPEED_NO_GUI").is_some();
     let ui = if headless {
         None
     } else {
@@ -823,11 +943,12 @@ pub fn run(paths: &SpeedPaths, options: AgentOptions) -> anyhow::Result<()> {
         started_at: date::now_unix(),
         interval: options.interval,
         save_errors_logged: false,
+        update: UpdateCheck::new(&paths.dir, update::checks_enabled()),
     }));
     let (updates_tx, updates_rx) = mpsc::channel();
     let worker_state = Arc::clone(&state);
     let worker = std::thread::Builder::new()
-        .name("berry-speed-sampler".into())
+        .name("wattbit-speed-sampler".into())
         .spawn(move || -> anyhow::Result<()> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -968,8 +1089,8 @@ async fn accept(listener: &Option<AsyncUnixListener>) -> Option<AsyncUnixStream>
     }
 }
 
-fn tick(state: &Arc<Mutex<AgentState>>, updates: &Sender<Display>) {
-    let mut state = AgentState::lock(state);
+fn tick(state_arc: &Arc<Mutex<AgentState>>, updates: &Sender<Display>) {
+    let mut state = AgentState::lock(state_arc);
     let now = Instant::now();
     let elapsed = now.duration_since(state.last_sample_at).as_secs_f64();
     let totals = match sampler::totals() {
@@ -1004,9 +1125,69 @@ fn tick(state: &Arc<Mutex<AgentState>>, updates: &Sender<Display>) {
         state.persist();
     }
 
+    let check_due = state.update.cache_path.is_some()
+        && !state.update.running
+        && now >= state.update.next_check;
+    if check_due {
+        state.update.running = true;
+        spawn_update_check(Arc::clone(state_arc));
+    }
+
     let display = state.display();
     drop(state);
     let _ = updates.send(display);
+}
+
+/// Asks GitHub for the latest release on a short-lived thread and records
+/// the answer, so the menu can offer the update.
+fn spawn_update_check(state: Arc<Mutex<AgentState>>) {
+    let spawned = std::thread::Builder::new()
+        .name("wattbit-update-check".into())
+        .spawn({
+            let state = Arc::clone(&state);
+            move || {
+                let result = update::fetch_latest();
+                let mut state = AgentState::lock(&state);
+                let check = &mut state.update;
+                check.running = false;
+                match result {
+                    Ok(latest) => {
+                        check.next_check = Instant::now() + update::CHECK_INTERVAL;
+                        check.failure_logged = false;
+                        let cache = UpdateCache {
+                            checked_at: date::now_unix(),
+                            latest: latest.to_string(),
+                        };
+                        check.available = cache.newer_than_current();
+                        if let Some(available) = check.available {
+                            log!(
+                                "wattbit {available} is available (this is {}); update with: {}",
+                                Version::current(),
+                                update::INSTALL_COMMAND
+                            );
+                        }
+                        if let Some(path) = &check.cache_path {
+                            if let Err(e) = update::write_cache(path, &cache) {
+                                log!("cannot save the update check: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        check.next_check = Instant::now() + update::RETRY_INTERVAL;
+                        if !check.failure_logged {
+                            check.failure_logged = true;
+                            log!("update check failed, retrying hourly: {e:#}");
+                        }
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        let mut state = AgentState::lock(&state);
+        state.update.running = false;
+        state.update.next_check = Instant::now() + update::RETRY_INTERVAL;
+        log!("cannot start the update check: {e}");
+    }
 }
 
 async fn serve_state(state: &Arc<Mutex<AgentState>>, stream: AsyncUnixStream) {
@@ -1035,7 +1216,7 @@ mod tests {
     use super::*;
 
     fn paths(name: &str) -> SpeedPaths {
-        let dir = std::env::temp_dir().join(format!("berry-speed-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wattbit-speed-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         SpeedPaths {
             store: dir.join("speed.json"),
@@ -1049,10 +1230,11 @@ mod tests {
     #[test]
     fn plist_points_at_the_agent_subcommand() {
         let text = plist(
-            Path::new("/usr/local/bin/berry"),
+            Path::new("/usr/local/bin/wattbit"),
             Path::new("/tmp/speed.log"),
+            true,
         );
-        assert!(text.contains("<string>com.berry.speed</string>"));
+        assert!(text.contains("<string>com.wattbit.speed</string>"));
         assert!(text.contains("<string>speed</string>"));
         assert!(text.contains("<string>agent</string>"));
         assert!(text.contains("<key>LimitLoadToSessionType</key>"));
@@ -1070,12 +1252,33 @@ mod tests {
             text.matches("<array>").count(),
             text.matches("</array>").count()
         );
+        assert!(!text.contains("EnvironmentVariables"));
+    }
+
+    #[test]
+    fn plist_carries_the_update_opt_out() {
+        let text = plist(
+            Path::new("/usr/local/bin/wattbit"),
+            Path::new("/tmp/speed.log"),
+            false,
+        );
+        assert!(text.contains(
+            "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>WATTBIT_NO_UPDATE_CHECK</key>\n\t\t<string>1</string>\n\t</dict>\n</dict>"
+        ));
+        assert_eq!(
+            text.matches("<dict>").count(),
+            text.matches("</dict>").count()
+        );
     }
 
     #[test]
     fn plist_escapes_paths() {
-        let text = plist(Path::new("/opt/a&b/<berry>"), Path::new("/tmp/x.log"));
-        assert!(text.contains("<string>/opt/a&amp;b/&lt;berry&gt;</string>"));
+        let text = plist(
+            Path::new("/opt/a&b/<wattbit>"),
+            Path::new("/tmp/x.log"),
+            true,
+        );
+        assert!(text.contains("<string>/opt/a&amp;b/&lt;wattbit&gt;</string>"));
     }
 
     #[test]
@@ -1085,9 +1288,11 @@ mod tests {
         let me = PidFile {
             pid: 42,
             started_at: 1_700_000_000,
+            version: Some(env!("CARGO_PKG_VERSION").into()),
         };
-        assert!(PidFile::create(&paths.pid, me).unwrap());
-        assert!(!PidFile::create(&paths.pid, me).unwrap());
+        assert!(PidFile::create(&paths.pid, &me).unwrap());
+        assert!(!PidFile::create(&paths.pid, &me).unwrap());
+        assert!(PidFile::read(&paths.pid).unwrap().is_current());
         assert_eq!(PidFile::read(&paths.pid), Some(me));
         let mode = fs::metadata(&paths.pid).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, FILE_MODE);
@@ -1103,6 +1308,17 @@ mod tests {
     }
 
     #[test]
+    fn pid_files_from_older_versions_are_not_current() {
+        let paths = paths("old-pid");
+        fs::create_dir_all(&paths.dir).unwrap();
+        fs::write(&paths.pid, r#"{"pid": 42, "started_at": 0}"#).unwrap();
+        let old = PidFile::read(&paths.pid).unwrap();
+        assert_eq!(old.version, None);
+        assert!(!old.is_current());
+        let _ = fs::remove_dir_all(&paths.dir);
+    }
+
+    #[test]
     fn stale_pid_files_are_ignored() {
         let paths = paths("stale");
         fs::create_dir_all(&paths.dir).unwrap();
@@ -1115,7 +1331,7 @@ mod tests {
     fn foreign_pids_are_not_claimed() {
         let paths = paths("foreign");
         fs::create_dir_all(&paths.dir).unwrap();
-        // Pid 1 is launchd, alive but not berry.
+        // Pid 1 is launchd, alive but not wattbit.
         fs::write(&paths.pid, r#"{"pid": 1, "started_at": 0}"#).unwrap();
         if executable_of(1).is_some() {
             assert_eq!(live_agent(&paths), None);
@@ -1150,6 +1366,7 @@ mod tests {
             started_at: 42,
             interval: 1.0,
             save_errors_logged: false,
+            update: UpdateCheck::disabled(),
         }));
 
         // The server thread owns the listener and the runtime that drives

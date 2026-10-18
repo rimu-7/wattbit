@@ -1,14 +1,16 @@
 //! The menu bar item, built directly on AppKit.
 //!
-//! `berry speed on` runs a small agent in the user's login session, and this
+//! `wattbit speed on` runs a small agent in the user's login session, and this
 //! module turns it into a status item next to the other menu bar extras. It
 //! talks to AppKit through the Objective-C runtime with hand-written
-//! declarations, the same way the rest of berry talks to IOKit.
+//! declarations, the same way the rest of wattbit talks to IOKit.
 //!
 //! The item shows the live rates as its title (`↓ 1.23 MB/s ↑ 340 KB/s`).
 //! Clicking it opens a small menu with today's and the month's totals and a
-//! way to turn the meter off. macOS remembers where a status item was
-//! dragged while it has an autosave name, so once the user moves berry next
+//! way to turn the meter off. When a newer wattbit release is known, the
+//! menu opens with an update warning, the exact command to run in
+//! Terminal, and an item that copies that command to the clipboard. macOS remembers where a status item was
+//! dragged while it has an autosave name, so once the user moves wattbit next
 //! to the other icons it stays there.
 //!
 //! Everything here is optional: without a logged-in Aqua session (for
@@ -22,6 +24,7 @@ use core_foundation::string::CFString;
 
 use super::store::RETENTION_DAYS;
 use super::Display;
+use crate::update::{Version, INSTALL_COMMAND};
 
 type Id = *mut c_void;
 type Sel = *mut c_void;
@@ -123,6 +126,35 @@ unsafe fn send_void_of_id(receiver: Id, selector: Sel, argument: Id) {
 }
 
 /// SAFETY: `receiver` must be a live object that responds to `selector`
+/// with one `BOOL` argument.
+unsafe fn send_void_of_bool(receiver: Id, selector: Sel, argument: bool) {
+    msg_send!(
+        unsafe extern "C" fn(Id, Sel, i8),
+        receiver,
+        selector,
+        i8::from(argument)
+    )
+}
+
+/// SAFETY: `receiver` must be a live object that responds to `selector`,
+/// which must return `NSInteger` and take no arguments.
+unsafe fn send_isize(receiver: Id, selector: Sel) -> isize {
+    msg_send!(unsafe extern "C" fn(Id, Sel) -> isize, receiver, selector)
+}
+
+/// SAFETY: `receiver` must be a live object that responds to `selector`
+/// with two object arguments, returning `BOOL`.
+unsafe fn send_bool_of_two(receiver: Id, selector: Sel, first: Id, second: Id) -> bool {
+    msg_send!(
+        unsafe extern "C" fn(Id, Sel, Id, Id) -> i8,
+        receiver,
+        selector,
+        first,
+        second
+    ) != 0
+}
+
+/// SAFETY: `receiver` must be a live object that responds to `selector`
 /// with one `double` argument.
 unsafe fn send_id_of_f64(receiver: Id, selector: Sel, argument: f64) -> Id {
     msg_send!(
@@ -193,8 +225,33 @@ pub fn gui_session() -> bool {
 }
 
 /// The action target for menu items. The selector sets the shared stop flag.
-extern "C" fn berry_turn_off(_this: Id, _command: Sel, _sender: Id) {
+extern "C" fn wattbit_turn_off(_this: Id, _command: Sel, _sender: Id) {
     super::request_stop();
+}
+
+/// The *Copy Update Command* item: puts [`INSTALL_COMMAND`] on the
+/// clipboard, ready to paste into Terminal.
+extern "C" fn wattbit_copy_update_command(_this: Id, _command: Sel, _sender: Id) {
+    copy_to_clipboard(INSTALL_COMMAND);
+}
+
+/// Replaces the general pasteboard's contents with `text`.
+fn copy_to_clipboard(text: &str) -> bool {
+    // SAFETY: NSPasteboard's class methods and instance methods are called
+    // with their declared signatures; the strings live for the call.
+    unsafe {
+        let pasteboard = send_id(class(c"NSPasteboard"), selector(c"generalPasteboard"));
+        if pasteboard.is_null() {
+            return false;
+        }
+        send_isize(pasteboard, selector(c"clearContents"));
+        with_nsstring(text, |text| {
+            // NSPasteboardTypeString's value.
+            with_nsstring("public.utf8-plain-text", |kind| {
+                send_bool_of_two(pasteboard, selector(c"setString:forType:"), text, kind)
+            })
+        })
+    }
 }
 
 /// Creates the target object for the menu's action items, if the runtime
@@ -204,24 +261,33 @@ fn menu_target() -> Option<Id> {
     // method's implementation matches its `v@:@` (void, self, _cmd, id)
     // encoding.
     unsafe {
-        let existing = class(c"BerrySpeedMenuTarget");
+        let existing = class(c"WattbitSpeedMenuTarget");
         let target_class = if existing.is_null() {
             let superclass = class(c"NSObject");
             if superclass.is_null() {
                 return None;
             }
-            let created = objc_allocateClassPair(superclass, c"BerrySpeedMenuTarget".as_ptr(), 0);
+            let created = objc_allocateClassPair(superclass, c"WattbitSpeedMenuTarget".as_ptr(), 0);
             if created.is_null() {
                 return None;
             }
-            let added = class_addMethod(
-                created,
-                selector(c"berryTurnOff:"),
-                berry_turn_off as *const c_void,
-                c"v@:@".as_ptr(),
-            );
-            if added == 0 {
-                return None;
+            let methods: [(Sel, extern "C" fn(Id, Sel, Id)); 2] = [
+                (selector(c"wattbitTurnOff:"), wattbit_turn_off),
+                (
+                    selector(c"wattbitCopyUpdateCommand:"),
+                    wattbit_copy_update_command,
+                ),
+            ];
+            for (name, implementation) in methods {
+                if class_addMethod(
+                    created,
+                    name,
+                    implementation as *const c_void,
+                    c"v@:@".as_ptr(),
+                ) == 0
+                {
+                    return None;
+                }
             }
             objc_registerClassPair(created);
             created
@@ -242,6 +308,10 @@ pub struct Ui {
     upload_item: Id,
     today_item: Id,
     window_item: Id,
+    /// The update section, hidden until a newer release is known.
+    update_items: [Id; 5],
+    update_title_item: Id,
+    shown_update: Option<Version>,
     run_loop: Id,
     last_title: String,
     /// Kept alive for the process lifetime.
@@ -299,7 +369,7 @@ impl Ui {
             }
             // Persist the item's position and visibility across restarts,
             // so a user-dragged place next to the system icons sticks.
-            with_nsstring("com.berry.speed", |name| {
+            with_nsstring("com.wattbit.speed", |name| {
                 send_void_of_id(item, selector(c"setAutosaveName:"), name)
             });
 
@@ -307,7 +377,7 @@ impl Ui {
             if button.is_null() {
                 return Err("the status item has no button".into());
             }
-            with_nsstring("berry speed", |title| {
+            with_nsstring("wattbit speed", |title| {
                 send_void_of_id(button, selector(c"setTitle:"), title)
             });
 
@@ -332,12 +402,25 @@ impl Ui {
                 })
             };
             let separator = || {
-                send_void_of_id(
-                    menu,
-                    selector(c"addItem:"),
-                    send_id(class(c"NSMenuItem"), selector(c"separatorItem")),
-                )
+                let item = retain(send_id(class(c"NSMenuItem"), selector(c"separatorItem")));
+                send_void_of_id(menu, selector(c"addItem:"), item);
+                item
             };
+
+            let update_title_item = add("Update available", std::ptr::null_mut());
+            let update_items = [
+                update_title_item,
+                add("Run this in Terminal to update:", std::ptr::null_mut()),
+                add(&format!("    {INSTALL_COMMAND}"), std::ptr::null_mut()),
+                add(
+                    "Copy Update Command",
+                    selector(c"wattbitCopyUpdateCommand:"),
+                ),
+                separator(),
+            ];
+            for item in update_items {
+                send_void_of_bool(item, selector(c"setHidden:"), true);
+            }
 
             let download_item = add("Download: –", std::ptr::null_mut());
             let upload_item = add("Upload: –", std::ptr::null_mut());
@@ -348,9 +431,10 @@ impl Ui {
                 std::ptr::null_mut(),
             );
             separator();
-            let turn_off = add("Turn off speed meter", selector(c"berryTurnOff:"));
+            let turn_off = add("Turn off speed meter", selector(c"wattbitTurnOff:"));
             let target = menu_target().ok_or("cannot register the menu action")?;
             send_void_of_id(turn_off, selector(c"setTarget:"), target);
+            send_void_of_id(update_items[3], selector(c"setTarget:"), target);
             send_void_of_id(item, selector(c"setMenu:"), menu);
 
             let run_loop = retain(send_id(class(c"NSRunLoop"), selector(c"currentRunLoop")));
@@ -365,6 +449,9 @@ impl Ui {
                 upload_item,
                 today_item,
                 window_item,
+                update_items,
+                update_title_item,
+                shown_update: None,
                 run_loop,
                 last_title: String::new(),
                 _menu: menu,
@@ -430,6 +517,15 @@ impl Ui {
                     super::format::bytes(display.window_upload_bytes)
                 ),
             );
+            if display.update != self.shown_update {
+                if let Some(latest) = display.update {
+                    set(self.update_title_item, update_title(latest));
+                }
+                for item in self.update_items {
+                    send_void_of_bool(item, selector(c"setHidden:"), display.update.is_none());
+                }
+                self.shown_update = display.update;
+            }
         }
     }
 
@@ -451,9 +547,52 @@ impl Ui {
     }
 }
 
+/// The first line of the update section.
+fn update_title(latest: Version) -> String {
+    format!(
+        "⚠️ Update available: wattbit {latest} (you have {})",
+        Version::current()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_titles_name_both_versions() {
+        let latest = Version {
+            major: 9,
+            minor: 8,
+            patch: 7,
+        };
+        assert_eq!(
+            update_title(latest),
+            format!(
+                "⚠️ Update available: wattbit 9.8.7 (you have {})",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    /// Touches the real clipboard (and restores it), so it only runs on
+    /// request: `cargo test --lib copies_to_the_clipboard -- --ignored`.
+    #[test]
+    #[ignore = "uses the real clipboard"]
+    fn copies_to_the_clipboard() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let saved = Command::new("/usr/bin/pbpaste").output().unwrap().stdout;
+        assert!(copy_to_clipboard(INSTALL_COMMAND));
+        let pasted = Command::new("/usr/bin/pbpaste").output().unwrap().stdout;
+        let mut restore = Command::new("/usr/bin/pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        restore.stdin.take().unwrap().write_all(&saved).unwrap();
+        restore.wait().unwrap();
+        assert_eq!(String::from_utf8(pasted).unwrap(), INSTALL_COMMAND);
+    }
 
     #[test]
     fn session_probe_never_panics() {

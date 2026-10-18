@@ -42,7 +42,7 @@ impl Support {
         }
     }
 
-    /// Whether berry will attempt to use the feature.
+    /// Whether wattbit will attempt to use the feature.
     pub fn is_usable(&self) -> bool {
         !matches!(self, Support::Unsupported { .. })
     }
@@ -59,7 +59,7 @@ impl Support {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChargeControlMode {
-    /// SMC charge-inhibit keys, driven by berry's hysteresis loop.
+    /// SMC charge-inhibit keys, driven by wattbit's hysteresis loop.
     Native,
     /// Intel `BCLM` firmware ceiling; the firmware enforces the limit.
     FirmwareLimit,
@@ -148,7 +148,7 @@ pub struct Detection {
 /// Probes the SMC. Pass `verify_writes = true` only when running as root.
 pub fn detect(smc: Result<&Smc, &SmcError>, verify_writes: bool) -> Detection {
     let host = host_info();
-    let calibration = Support::unsupported("berry does not implement automatic calibration");
+    let calibration = Support::unsupported("wattbit does not implement automatic calibration");
     let sleep_hooks = Support::unverified("sleep hooks are registered by the daemon");
 
     let smc = match smc {
@@ -289,7 +289,7 @@ impl<'a> Prober<'a> {
             }
             if control.classify(&value.bytes).is_none() {
                 return Support::unsupported(format!(
-                    "SMC key {key} holds unrecognized value [{}]; berry will not drive it",
+                    "SMC key {key} holds unrecognized value [{}]; wattbit will not drive it",
                     value.hex()
                 ));
             }
