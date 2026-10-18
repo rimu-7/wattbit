@@ -22,6 +22,7 @@ pub mod power;
 pub mod protocol;
 pub mod service;
 pub mod smc;
+pub mod speed;
 
 /// Default location of the daemon's Unix domain socket.
 pub const SOCKET_PATH: &str = "/var/run/berry.sock";
