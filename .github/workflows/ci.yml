@@ -14,39 +14,60 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
       - uses: Swatinem/rust-cache@v2
+
       - name: Check install.sh syntax
         run: |
           sh -n install.sh
           bash -n install.sh
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - run: cargo build --release
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
 
   compatibility:
     # The release binary targets macOS 11+ on both chips; this runs the whole
-    # suite natively on every macOS and CPU GitHub offers.
+    # suite natively on current Apple Silicon (arm64) and Intel (x86_64) runners.
     name: test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-13, macos-14, macos-15]
+        os: [macos-15-intel, macos-15, macos-26]
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+
       - uses: Swatinem/rust-cache@v2
+
       - name: Show the machine
-        run: sw_vers && uname -m && sysctl -n machdep.cpu.brand_string
-      - run: cargo test --locked
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n machdep.cpu.brand_string || true
+
+      - name: Run tests
+        run: cargo test --locked
+
       - name: Smoke-test the release build
         run: |
           cargo build --release --locked
           ./target/release/wattbit --version
           ./target/release/wattbit doctor || true
+          mkdir -p "$RUNNER_TEMP/speed"
           WATTBIT_SPEED_DIR="$RUNNER_TEMP/speed" WATTBIT_NO_UPDATE_CHECK=1 \
             ./target/release/wattbit speed agent --once --interval 0.5

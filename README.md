@@ -2,8 +2,8 @@
 
 **Battery charge limiting and a live internet speed meter for your Mac — in one small, native command-line tool.**
 
-[![Latest release](https://badgen.net/github/tag/rimu-7/wattbit?label=release)](https://github.com/rimu-7/wattbit/releases/latest)
-[![CI](https://github.com/rimu-7/wattbit/actions/workflows/ci.yml/badge.svg)](https://github.com/rimu-7/wattbit/actions/workflows/ci.yml)
+[![Latest release](https://badgen.net/github/release/rimu-7/wattbit?label=release)](https://github.com/rimu-7/wattbit/releases/latest)
+[![CI](https://github.com/rimu-7/wattbit/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/rimu-7/wattbit/actions/workflows/ci.yml)
 ![macOS 11+](https://img.shields.io/badge/macOS-11%2B-000000?logo=apple)
 ![Apple Silicon and Intel](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-0a84ff)
 
