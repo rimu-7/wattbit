@@ -7,6 +7,10 @@ the charge drops a little below it. It also shows detailed battery
 information, can run your Mac from battery while plugged in, and explains
 what your hardware does and doesn't support.
 
+A second, independent tool in the same program — `berry speed` — shows your
+live internet speeds in the menu bar and keeps a 31-day usage history. It
+needs no `sudo` and works on every Mac.
+
 berry is honest about hardware: if your Mac can't do something, berry says
 so and tells you why. It never pretends a setting worked.
 
@@ -15,6 +19,7 @@ so and tells you why. It never pretends a setting worked.
 - [Will it work on my Mac?](#will-it-work-on-my-mac)
 - [Setting a charge limit](#setting-a-charge-limit)
 - [Commands](#commands)
+- [The internet speed meter](#the-internet-speed-meter)
 - [Reading `berry doctor`](#reading-berry-doctor)
 - [Reading `berry status`](#reading-berry-status)
 - [Troubleshooting](#troubleshooting)
@@ -135,6 +140,9 @@ Run `berry status`. You should see:
 | `berry adapter disable` | Runs the Mac from battery while plugged in | yes |
 | `berry adapter enable` | Uses the charger again | yes |
 | `berry set OPTION on\|off` | Changes a setting (see below) | yes |
+| `berry speed on` | Shows the speed meter in the menu bar and records usage | no |
+| `berry speed off` | Hides the meter and stops recording (history is kept) | no |
+| `berry speed status` | Live speeds and internet usage for the last 31 days | no |
 | `berry install-service` | Installs or updates the background service | yes |
 | `berry uninstall-service [--purge]` | Removes it (`--purge` also deletes settings) | yes |
 
@@ -162,6 +170,27 @@ Example: `sudo berry set magsafe-led on`
 | `3` | Your Mac's hardware doesn't support this |
 | `4` | Needs `sudo` |
 | `5` | Another battery app is in control; remove it first |
+
+## The internet speed meter
+
+`berry speed` shows the current download and upload rates in the menu bar
+(`↓ 1.23 MB/s ↑ 340 KB/s`), right next to the system icons, and keeps a
+per-day history of your internet usage for the last 31 days. Records older
+than that are deleted automatically.
+
+```sh
+berry speed on       # show the meter and start recording (no sudo)
+berry speed status   # live speeds and the last 31 days of usage
+berry speed off      # hide it and stop recording; the history stays
+```
+
+It runs as you, in your login session, and starts again by itself at login.
+It never needs `sudo`; if you use it anyway, it refuses. The item can be
+moved anywhere in the menu bar with ⌘+drag and macOS remembers the spot.
+
+The full guide — units, what is counted (VPNs, VMs, tethering), the data
+files, the JSON report, troubleshooting — is in
+**[docs/SPEED.md](docs/SPEED.md)**.
 
 ## Reading `berry doctor`
 
@@ -261,6 +290,11 @@ check whether the Mac was asleep: berry can't act during sleep, which is why
 `tail -f /var/log/berry.log` shows every decision as it happens, for
 example: limit reached, charging stopped, charger switched back on.
 
+**The speed meter misbehaves**
+The menu bar item, the history file and the log have their own guide:
+[docs/SPEED.md](docs/SPEED.md#troubleshooting). Start with
+`berry speed status`.
+
 ## Updating and uninstalling
 
 **Update:** pull the new code, then run:
@@ -292,6 +326,8 @@ Normal charging is restored immediately.
 | `/etc/berry.json` | Your settings (created when you first change one) |
 | `/var/log/berry.log` | Log |
 | `/var/run/berry.sock` | How the `berry` command talks to the service |
+| `~/Library/LaunchAgents/com.berry.speed.plist` | Login item for the speed meter, only while `berry speed on` is active (per user) |
+| `~/Library/Application Support/berry/` | Speed-meter usage history and log (per user, mode 0700) |
 
 ## How it works
 
@@ -368,6 +404,7 @@ src/
 ├── power.rs           sleep/wake and power-source notifications, sleep prevention
 ├── doctor.rs          diagnostic checks
 ├── service.rs         LaunchDaemon install and uninstall
+├── speed/             internet speed meter (see docs/SPEED.md)
 └── ffi.rs             IOKit declarations taken from the macOS SDK headers
 ```
 
@@ -399,6 +436,7 @@ the category.
 
 ```sh
 cargo test                                            # all automated tests
+cargo test --test speed                               # speed meter end to end
 cargo test --test hardware -- --ignored --nocapture   # read-only checks of this Mac
 ```
 
