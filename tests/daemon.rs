@@ -190,8 +190,8 @@ fn bad_input_is_rejected_by_the_cli() {
     let output = daemon.wattbit(&["limit", "120"]);
     assert_eq!(output.status.code(), Some(2));
     let output = daemon.wattbit(&["limit", "80", "--lower", "90"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("must be below the upper limit"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("unexpected argument '--lower'"));
 }
 
 #[test]

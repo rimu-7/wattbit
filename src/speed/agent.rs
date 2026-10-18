@@ -1218,7 +1218,8 @@ mod tests {
     use super::*;
 
     fn paths(name: &str) -> SpeedPaths {
-        let dir = PathBuf::from("/tmp").join(format!("wattbit-speed-{}-{name}", std::process::id()));
+        let dir =
+            PathBuf::from("/tmp").join(format!("wattbit-speed-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         SpeedPaths {
             store: dir.join("speed.json"),

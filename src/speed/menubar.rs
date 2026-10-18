@@ -411,7 +411,10 @@ impl Ui {
             let update_items = [
                 update_title_item,
                 add("Run this in Terminal to update:", std::ptr::null_mut()),
-                add(&format!("    {INSTALL_COMMAND}"), selector(c"wattbitCopyUpdateCommand:")),
+                add(
+                    &format!("    {INSTALL_COMMAND}"),
+                    selector(c"wattbitCopyUpdateCommand:"),
+                ),
                 add(
                     "Copy Update Command",
                     selector(c"wattbitCopyUpdateCommand:"),

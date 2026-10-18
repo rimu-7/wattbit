@@ -43,9 +43,10 @@ pub struct Mcl {
     available_limits: Vec<u8>,
 }
 
-// Safety: `PowerUISmartChargeClient` interacts with `PowerUIAgent` over XPC.
+// SAFETY: `PowerUISmartChargeClient` interacts with `PowerUIAgent` over XPC.
 // The pointer is owned by `Mcl` and method calls are thread-safe or guarded.
 unsafe impl Send for Mcl {}
+// SAFETY: Concurrent immutable queries to PowerUISmartChargeClient dispatch safely.
 unsafe impl Sync for Mcl {}
 
 impl fmt::Debug for Mcl {
@@ -59,6 +60,7 @@ impl fmt::Debug for Mcl {
 impl Clone for Mcl {
     fn clone(&self) -> Self {
         if !self.client.is_null() {
+            // SAFETY: self.client is a live Objective-C object responding to retain.
             unsafe {
                 let sel_retain = sel_registerName(c"retain".as_ptr());
                 let msg_ret: extern "C" fn(Id, Sel) -> Id =
@@ -77,6 +79,8 @@ impl Mcl {
     /// Attempts to open the `PowerUI` client. Returns `None` if the framework
     /// or `PowerUISmartChargeClient` class is not present.
     pub fn open() -> Result<Self, MclError> {
+        // SAFETY: dlopen loads the system private framework; Objective-C runtime functions
+        // are invoked with exact signatures matching the Apple PowerUI framework headers.
         unsafe {
             let handle = libc::dlopen(
                 c"/System/Library/PrivateFrameworks/PowerUI.framework/PowerUI".as_ptr(),
@@ -131,7 +135,9 @@ impl Mcl {
         }
     }
 
+    // SAFETY: client must be a valid PowerUISmartChargeClient instance.
     unsafe fn read_available_limits(client: Id) -> Vec<u8> {
+        // SAFETY: ObjC calls match the PowerUISmartChargeClient selector signatures.
         unsafe {
             let sel_limits = sel_registerName(c"availableChargeLimitsWithError:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
@@ -194,6 +200,7 @@ impl Mcl {
 
     /// Checks if native charge limit (MCL) is currently enabled.
     pub fn is_enabled(&self) -> Result<bool, MclError> {
+        // SAFETY: self.client is a live PowerUISmartChargeClient instance.
         unsafe {
             let sel = sel_registerName(c"isMCLCurrentlyEnabled:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
@@ -210,6 +217,7 @@ impl Mcl {
 
     /// Reads the currently configured manual charge limit percentage.
     pub fn get_limit(&self) -> Result<u8, MclError> {
+        // SAFETY: self.client is a live PowerUISmartChargeClient instance.
         unsafe {
             let sel = sel_registerName(c"getMCLLimitWithError:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
@@ -227,6 +235,7 @@ impl Mcl {
     /// Sets the manual charge limit percentage and enables MCL.
     pub fn set_limit(&self, percent: u8) -> Result<(), MclError> {
         let snapped = self.snap_limit(percent);
+        // SAFETY: self.client is a live PowerUISmartChargeClient instance; selectors match declared signatures.
         unsafe {
             let sel_set = sel_registerName(c"setMCLLimit:error:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
@@ -254,6 +263,7 @@ impl Mcl {
 
     /// Disables manual charge limit, returning to factory 100% charging.
     pub fn disable(&self) -> Result<(), MclError> {
+        // SAFETY: self.client is a live PowerUISmartChargeClient instance; selectors match declared signatures.
         unsafe {
             let sel_disable = sel_registerName(c"disableMCL:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
@@ -276,7 +286,9 @@ impl Mcl {
         }
     }
 
+    // SAFETY: err must be a valid NSError object or null.
     unsafe fn format_error(err: Id) -> String {
+        // SAFETY: Objective-C calls to NSError description and NSString UTF8String match their signatures.
         unsafe {
             if err.is_null() {
                 return "unknown error".into();
@@ -301,6 +313,7 @@ impl Mcl {
 impl Drop for Mcl {
     fn drop(&mut self) {
         if !self.client.is_null() {
+            // SAFETY: self.client was retained or created by this instance and responds to release.
             unsafe {
                 let sel_release = sel_registerName(c"release".as_ptr());
                 let msg_rel: extern "C" fn(Id, Sel) =

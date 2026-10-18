@@ -314,10 +314,7 @@ impl Controller {
                 if (current_enabled && current_limit == snapped) || !may_write {
                     return Some(if current_enabled { current_limit } else { 100 });
                 }
-                match self
-                    .write("MCL", move |hw| hw.set_mcl_limit(snapped))
-                    .await
-                {
+                match self.write("MCL", move |hw| hw.set_mcl_limit(snapped)).await {
                     Ok(()) => {
                         log!("native charge limit set to {snapped}%");
                         Some(snapped)
@@ -476,10 +473,7 @@ impl Controller {
                 } else {
                     None
                 };
-                if let Some(limit) = self
-                    .ensure_mcl(target, may_write, &mut errors)
-                    .await
-                {
+                if let Some(limit) = self.ensure_mcl(target, may_write, &mut errors).await {
                     if may_write {
                         st.owns_mcl = target.is_some();
                     }

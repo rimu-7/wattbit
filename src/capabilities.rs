@@ -466,7 +466,12 @@ fn sysctl_string(name: &CStr) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn caps_with_mcl(charge: Support, mcl: Support, bclm: Support, adapter: Support) -> Capabilities {
+    fn caps_with_mcl(
+        charge: Support,
+        mcl: Support,
+        bclm: Support,
+        adapter: Support,
+    ) -> Capabilities {
         Capabilities {
             host: HostInfo {
                 arch: "arm64 (Apple Silicon)".into(),
@@ -494,10 +499,20 @@ mod tests {
     #[test]
     fn mode_prefers_native_then_mcl_then_firmware_then_fallback() {
         let no = || Support::unsupported("absent");
-        let c = caps_with_mcl(Support::Supported, Support::Supported, Support::Supported, Support::Supported);
+        let c = caps_with_mcl(
+            Support::Supported,
+            Support::Supported,
+            Support::Supported,
+            Support::Supported,
+        );
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Native);
 
-        let c = caps_with_mcl(no(), Support::Supported, Support::Supported, Support::Supported);
+        let c = caps_with_mcl(
+            no(),
+            Support::Supported,
+            Support::Supported,
+            Support::Supported,
+        );
         assert_eq!(c.charge_control_mode(true), ChargeControlMode::Mcl);
 
         let c = caps_with_mcl(no(), no(), Support::Supported, Support::Supported);
