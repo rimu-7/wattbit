@@ -204,14 +204,14 @@ impl Mcl {
         unsafe {
             let sel = sel_registerName(c"isMCLCurrentlyEnabled:".as_ptr());
             let mut err: Id = std::ptr::null_mut();
-            let msg: extern "C" fn(Id, Sel, *mut Id) -> bool =
+            let msg: extern "C" fn(Id, Sel, *mut Id) -> u64 =
                 std::mem::transmute(objc_msgSend as *const ());
             let enabled = msg(self.client, sel, &mut err);
             if !err.is_null() {
                 let desc = Self::format_error(err);
                 return Err(MclError::ReadFailed(desc));
             }
-            Ok(enabled)
+            Ok(enabled != 0)
         }
     }
 
@@ -233,6 +233,10 @@ impl Mcl {
     }
 
     /// Sets the manual charge limit percentage and enables MCL.
+    ///
+    /// Calling `setMCLLimit:error:` automatically enables MCL at the specified limit.
+    /// Note: `enableMCL:` must NOT be called here, as Apple's `enableMCL:` resets the
+    /// configured limit back to Apple's default of 80%.
     pub fn set_limit(&self, percent: u8) -> Result<(), MclError> {
         let snapped = self.snap_limit(percent);
         // SAFETY: self.client is a live PowerUISmartChargeClient instance; selectors match declared signatures.
@@ -245,16 +249,6 @@ impl Mcl {
             if !success || !err.is_null() {
                 let desc = Self::format_error(err);
                 return Err(MclError::SetLimitFailed(snapped, desc));
-            }
-
-            let sel_enable = sel_registerName(c"enableMCL:".as_ptr());
-            let mut enable_err: Id = std::ptr::null_mut();
-            let msg_enable: extern "C" fn(Id, Sel, *mut Id) -> bool =
-                std::mem::transmute(objc_msgSend as *const ());
-            let en_success = msg_enable(self.client, sel_enable, &mut enable_err);
-            if !en_success || !enable_err.is_null() {
-                let desc = Self::format_error(enable_err);
-                return Err(MclError::EnableFailed(desc));
             }
 
             Ok(())
@@ -274,13 +268,6 @@ impl Mcl {
                 let desc = Self::format_error(err);
                 return Err(MclError::DisableFailed(desc));
             }
-
-            // Also reset limit to 100
-            let sel_set = sel_registerName(c"setMCLLimit:error:".as_ptr());
-            let mut set_err: Id = std::ptr::null_mut();
-            let msg_set: extern "C" fn(Id, Sel, u8, *mut Id) -> bool =
-                std::mem::transmute(objc_msgSend as *const ());
-            let _ = msg_set(self.client, sel_set, 100, &mut set_err);
 
             Ok(())
         }
@@ -341,5 +328,49 @@ mod tests {
         assert_eq!(mcl.snap_limit(82), 80);
         assert_eq!(mcl.snap_limit(83), 85);
         assert_eq!(mcl.snap_limit(99), 100);
+    }
+
+    #[test]
+    #[ignore = "touches real PowerUI runtime"]
+    fn test_mcl_set_and_get_limits() {
+        let mcl = match Mcl::open() {
+            Ok(mcl) => mcl,
+            Err(MclError::Unavailable) | Err(MclError::Unsupported) => {
+                println!("MCL not supported on this hardware; skipping.");
+                return;
+            }
+            Err(e) => panic!("unexpected MCL open failure: {e}"),
+        };
+
+        println!("available limits: {:?}", mcl.available_limits());
+
+        for target in [80, 85, 90, 95, 100] {
+            mcl.set_limit(target)
+                .unwrap_or_else(|e| panic!("failed setting MCL limit to {target}: {e}"));
+            let current = mcl
+                .get_limit()
+                .unwrap_or_else(|e| panic!("failed getting MCL limit after setting {target}: {e}"));
+            assert_eq!(
+                current, target,
+                "expected MCL limit to be {target}, got {current}"
+            );
+            let enabled = mcl.is_enabled().expect("failed checking is_enabled");
+            if target == 100 {
+                // macOS disables MCL when set to 100
+                assert!(!enabled, "MCL should be disabled at 100%");
+            } else {
+                assert!(enabled, "MCL should be enabled at {target}%");
+            }
+        }
+
+        // Test disable
+        mcl.disable().expect("failed disabling MCL");
+        assert!(!mcl.is_enabled().expect("failed checking is_enabled after disable"));
+        assert_eq!(mcl.get_limit().expect("failed getting limit after disable"), 100);
+
+        // Restore to 85% for user test
+        mcl.set_limit(85).expect("failed setting MCL limit to 85");
+        assert_eq!(mcl.get_limit().expect("failed getting limit"), 85);
+        assert!(mcl.is_enabled().expect("failed checking is_enabled"));
     }
 }

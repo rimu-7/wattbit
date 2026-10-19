@@ -19,7 +19,10 @@ struct Daemon {
 impl Daemon {
     fn start(name: &str) -> Self {
         // Unix socket paths are limited to 104 bytes, so keep this short.
-        let dir = PathBuf::from(format!("/tmp/wattbit-it-{}-{name}", std::process::id()));
+        let base = option_env!("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let dir = base.join(format!("wb-{}-{}", std::process::id(), name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let child = Command::new(WATTBIT)

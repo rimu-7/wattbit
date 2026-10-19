@@ -14,8 +14,10 @@
 #   --version X.Y.Z  install that release instead of the latest
 #   --no-speed       leave the speed meter as it is
 #   --from-source    build the main branch with cargo instead of downloading
-#   --uninstall      remove wattbit; settings and usage history are kept
-#   --purge          with --uninstall, delete settings and history too
+#   --uninstall      remove wattbit and restore factory charging; settings
+#                    and usage history are kept
+#   --purge          with --uninstall, delete settings and history too,
+#                    leaving nothing of wattbit behind
 #   --help           show this help
 #
 # WATTBIT_VERSION and WATTBIT_NO_SPEED=1 work like --version and --no-speed.
@@ -59,7 +61,8 @@ Pass options after \`bash -s --\`, for example \`... | bash -s -- --no-speed\`:
   --version X.Y.Z  install that release instead of the latest
   --no-speed       leave the speed meter as it is
   --from-source    build the main branch with cargo instead of downloading
-  --uninstall      remove wattbit; settings and usage history are kept
+  --uninstall      remove wattbit and restore factory charging; settings
+                   and usage history are kept
   --purge          with --uninstall, delete settings and history too
   --help           show this help
 EOF
@@ -118,24 +121,163 @@ installed_version() {
   fi
 }
 
+make_work_dir() {
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/wattbit-install.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+  trap 'exit 130' INT TERM
+}
+
+# Makes $BIN runnable on this Mac and sets NEW to its version. Downloads
+# are ad-hoc signed; make sure the copy runs on Apple Silicon and is not
+# held back by a quarantine flag.
+prepare_binary() {
+  xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
+  codesign --verify "$BIN" 2>/dev/null || codesign --force --sign - "$BIN" 2>/dev/null || true
+  NEW="$("$BIN" --version 2>/dev/null | awk '{ print $2 }')" || return 1
+  [ -n "$NEW" ]
+}
+
+# Prints, one per line, what wattbit (or berry, its old name) still has on
+# this Mac for the current user. Settings and usage history only count
+# with --purge.
+leftovers() {
+  for path in \
+    /Library/LaunchDaemons/com.wattbit.daemon.plist "$INSTALLED" \
+    /var/run/wattbit.sock /var/log/wattbit.log \
+    /Library/LaunchDaemons/com.berry.daemon.plist /Library/PrivilegedHelperTools/berryd \
+    /var/run/berry.sock /var/log/berry.log \
+    "$HOME/Library/LaunchAgents/com.wattbit.speed.plist" \
+    "$HOME/Library/LaunchAgents/com.berry.speed.plist"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then say "$path"; fi
+  done
+  for link in "$LINK" /usr/local/bin/berry; do
+    if [ -L "$link" ]; then
+      case "$(readlink "$link")" in */wattbitd | */berryd) say "$link" ;; esac
+    fi
+  done
+  if [ "$PURGE" = 1 ]; then
+    for path in /etc/wattbit.json /etc/berry.json \
+      "$HOME/Library/Application Support/wattbit" \
+      "$HOME/Library/Application Support/berry"; do
+      if [ -e "$path" ] || [ -L "$path" ]; then say "$path"; fi
+    done
+  fi
+  for job in system/com.wattbit.daemon system/com.berry.daemon \
+    "gui/$(id -u)/com.wattbit.speed" "gui/$(id -u)/com.berry.speed"; do
+    if launchctl print "$job" >/dev/null 2>&1; then say "launchd job $job"; fi
+  done
+  return 0
+}
+
+# Removes wattbit's files without wattbit's help, for when its binary is
+# gone, or is a release that predates part of today's cleanup. It cannot
+# check the charging hardware; only `wattbit uninstall-service` can.
+remove_by_hand() {
+  uid="$(id -u)"
+  for label in com.wattbit.speed com.berry.speed; do
+    launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    if [ -f "$plist" ] && grep -q "<string>$label</string>" "$plist"; then
+      rm -f "$plist"
+    fi
+  done
+  # A meter started with --no-launchd has no login item.
+  pkill -U "$uid" -x wattbitd 2>/dev/null || true
+  pkill -U "$uid" -x berryd 2>/dev/null || true
+  data="$HOME/Library/Application Support"
+  if [ "$PURGE" = 1 ]; then
+    rm -rf "$data/wattbit"
+    # berry's directory: only the files berry is known to have written.
+    if [ -d "$data/berry" ]; then
+      rm -f "$data/berry/speed.json" "$data/berry/speed.pid" "$data/berry/speed.sock" \
+        "$data/berry/speed.log" "$data/berry/update.json" \
+        "$data/berry"/speed.json.corrupt.* "$data/berry"/.speed.json.tmp.* \
+        "$data/berry"/.update.json.tmp.*
+      rmdir "$data/berry" 2>/dev/null || warn "left $data/berry in place: it holds files berry did not create."
+    fi
+  else
+    rm -f "$data/wattbit/speed.pid" "$data/wattbit/speed.sock" \
+      "$data/berry/speed.pid" "$data/berry/speed.sock"
+  fi
+
+  sudo /bin/sh -s "$PURGE" <<'EOF' || true
+purge="$1"
+for label in com.wattbit.daemon com.berry.daemon; do
+  /bin/launchctl bootout "system/$label" 2>/dev/null
+done
+rm -f /Library/LaunchDaemons/com.wattbit.daemon.plist /Library/LaunchDaemons/com.berry.daemon.plist \
+  /Library/PrivilegedHelperTools/wattbitd /Library/PrivilegedHelperTools/berryd \
+  /var/log/wattbit.log /var/log/berry.log \
+  /Library/PrivilegedHelperTools/.wattbitd.tmp.* /Library/LaunchDaemons/.com.wattbit.daemon.plist.tmp.*
+for socket in /var/run/wattbit.sock /var/run/berry.sock; do
+  if [ -S "$socket" ]; then rm -f "$socket"; fi
+done
+for link in /usr/local/bin/wattbit /usr/local/bin/berry; do
+  if [ -L "$link" ]; then
+    case "$(readlink "$link")" in */wattbitd | */berryd) rm -f "$link" ;; esac
+  fi
+done
+if [ "$purge" = 1 ]; then
+  rm -f /etc/wattbit.json /etc/berry.json /etc/.wattbit.json.tmp.*
+fi
+EOF
+}
+
 uninstall() {
-  if [ ! -x "$INSTALLED" ]; then
+  if [ -z "$(leftovers)" ]; then
     say "wattbit is not installed; nothing to do."
     return
   fi
-  step "Stopping the speed meter"
-  "$INSTALLED" speed off </dev/null || warn "could not stop the speed meter."
-  step "Removing the battery service (administrator access needed)"
-  if [ "$PURGE" = 1 ]; then
-    sudo "$INSTALLED" uninstall-service --purge </dev/null
-    rm -rf "$HOME/Library/Application Support/wattbit"
-    say "Deleted your settings and usage history."
+
+  BIN=""
+  if [ -x "$INSTALLED" ]; then
+    BIN="$INSTALLED"
   else
-    sudo "$INSTALLED" uninstall-service </dev/null
-    say "Your settings (/etc/wattbit.json) and usage history are kept; --purge deletes them."
+    # Parts of wattbit are left but its binary is not. Only wattbit can put
+    # the charging hardware back, so fetch a copy to finish the job.
+    step "wattbit's binary is missing; downloading a copy to finish the uninstall"
+    make_work_dir
+    if fetch_release && prepare_binary; then
+      :
+    else
+      BIN=""
+      warn "could not get wattbit; its files are removed by hand instead."
+    fi
+  fi
+
+  if [ -n "$BIN" ]; then
+    step "Stopping the speed meter"
+    "$BIN" speed off </dev/null >/dev/null 2>&1 || true
+    step "Restoring factory charging and removing wattbit (administrator access needed)"
+    if [ "$PURGE" = 1 ]; then
+      sudo "$BIN" uninstall-service --purge </dev/null || warn "wattbit could not finish; cleaning up by hand."
+    else
+      sudo "$BIN" uninstall-service </dev/null || warn "wattbit could not finish; cleaning up by hand."
+    fi
+  else
+    step "Removing wattbit (administrator access needed)"
+  fi
+  # Catches what an older wattbit did not remove; a no-op otherwise.
+  if [ -n "$(leftovers)" ]; then
+    remove_by_hand
+  fi
+
+  remaining="$(leftovers)"
+  if [ -n "$remaining" ]; then
+    warn "these are still on this Mac:"
+    printf '%s\n' "$remaining" | sed 's/^/    /' >&2
+    die "remove them by hand, or report it at https://github.com/$REPO/issues"
   fi
   say ""
   say "${BOLD}wattbit is uninstalled.${RESET} Normal charging is restored."
+  if [ -z "$BIN" ]; then
+    say "wattbit could not check the charging hardware; restart your Mac to be sure charging is back to normal."
+  fi
+  if [ "$PURGE" = 1 ]; then
+    say "Your settings and usage history are deleted too; nothing of wattbit is left."
+  else
+    say "Your settings (/etc/wattbit.json) and usage history are kept; run this again with --purge to delete them."
+  fi
 }
 
 main() {
@@ -187,9 +329,7 @@ main() {
   fi
   [ "$PURGE" = 0 ] || die "--purge only goes with --uninstall."
 
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/wattbit-install.XXXXXX")"
-  trap 'rm -rf "$WORK"' EXIT
-  trap 'exit 130' INT TERM
+  make_work_dir
 
   if [ "$FROM_SOURCE" = 1 ]; then
     build_from_source
@@ -204,13 +344,7 @@ main() {
     fi
   fi
 
-  # Downloads are ad-hoc signed; make sure this copy runs on Apple Silicon
-  # and is not held back by a quarantine flag.
-  xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
-  codesign --verify "$BIN" 2>/dev/null || codesign --force --sign - "$BIN" 2>/dev/null || true
-  NEW="$("$BIN" --version 2>/dev/null | awk '{ print $2 }')" ||
-    die "the downloaded binary does not run on this Mac ($(uname -m))."
-  [ -n "$NEW" ] || die "the downloaded binary does not run on this Mac ($(uname -m))."
+  prepare_binary || die "the downloaded binary does not run on this Mac ($(uname -m))."
 
   OLD="$(installed_version)"
   if [ -z "$OLD" ]; then

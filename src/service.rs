@@ -26,7 +26,8 @@ use anyhow::{bail, Context};
 use crate::client::Client;
 use crate::legacy::{self, OldSettings};
 use crate::protocol::{Call, DaemonDiagnostics, Reply};
-use crate::{conflicts, CONFIG_PATH, SOCKET_PATH};
+use crate::speed::agent;
+use crate::{conflicts, daemon, CONFIG_PATH, SOCKET_PATH};
 
 pub const LABEL: &str = "com.wattbit.daemon";
 pub const PLIST_PATH: &str = "/Library/LaunchDaemons/com.wattbit.daemon.plist";
@@ -381,43 +382,121 @@ fn unlink_cli() -> anyhow::Result<bool> {
     Ok(ours)
 }
 
-/// Stops the service and removes the plist and binary. With `purge`, also
-/// deletes the configuration file.
+/// Removes wattbit from this Mac: stops the daemon, puts the charging
+/// hardware back to factory behaviour, deletes the daemon's files and
+/// stops every user's speed meter, berry's (wattbit's old name) included.
+/// With `purge`, also deletes the settings and every user's usage history.
 pub fn uninstall(purge: bool) -> anyhow::Result<String> {
     require_root("uninstall-service")?;
     let mut done = Vec::new();
+    let mut problems = Vec::new();
     let target = service_target();
-    if loaded(&target)? {
+    let running = loaded(&target)?;
+    let was_installed = running
+        || [PLIST_PATH, INSTALLED_BINARY]
+            .iter()
+            .any(|path| fs::symlink_metadata(path).is_ok());
+    if running {
+        // The daemon restores factory charging on SIGTERM.
         bootout(&target)?;
-        done.push("stopped the daemon (factory charging restored)".to_owned());
+        done.push("stopped the daemon".to_owned());
     }
+    // First, so launchd can never start the daemon again.
     if remove_if_present(Path::new(PLIST_PATH))? {
         done.push(format!("removed {PLIST_PATH}"));
     }
+    let old = legacy::clean_system(if purge {
+        OldSettings::Delete
+    } else {
+        OldSettings::Keep
+    })?;
+    let had_berry = !old.is_empty();
+    done.extend(old);
+
+    // A daemon that crashed, or that launchd had to kill, restored nothing,
+    // so restore here as well; after a clean stop this changes nothing.
+    if was_installed || had_berry {
+        match daemon::restore_factory() {
+            Ok(errors) if errors.is_empty() => {
+                done.push("restored factory charging behaviour".to_owned())
+            }
+            Ok(errors) => problems.push(format!(
+                "could not fully restore factory charging ({}); restart the Mac to reset it",
+                errors.join("; ")
+            )),
+            Err(e) => problems.push(format!(
+                "could not check the charging hardware ({e:#}); restart the Mac to reset it"
+            )),
+        }
+    }
+
     if unlink_cli()? {
         done.push(format!("removed {CLI_LINK}"));
     }
     if remove_if_present(Path::new(INSTALLED_BINARY))? {
         done.push(format!("removed {INSTALLED_BINARY}"));
     }
+    let stale_socket = fs::symlink_metadata(SOCKET_PATH).is_ok_and(|meta| {
+        use std::os::unix::fs::FileTypeExt;
+        meta.file_type().is_socket()
+    });
+    if stale_socket && remove_if_present(Path::new(SOCKET_PATH))? {
+        done.push(format!("removed {SOCKET_PATH}"));
+    }
+    if remove_if_present(Path::new(LOG_PATH))? {
+        done.push(format!("removed {LOG_PATH}"));
+    }
     if purge && remove_if_present(Path::new(CONFIG_PATH))? {
         done.push(format!("removed {CONFIG_PATH}"));
     }
-    done.extend(legacy::clean_system(if purge {
-        OldSettings::Delete
-    } else {
-        OldSettings::Keep
-    })?);
-    if done.is_empty() {
-        return Ok("The wattbit service was not installed; nothing to do.".into());
+    // Interrupted atomic writes (`.<name>.tmp.<pid>`).
+    let mut written = vec![INSTALLED_BINARY, PLIST_PATH];
+    if purge {
+        written.push(CONFIG_PATH);
+    }
+    for path in written {
+        for tmp in temp_files_of(Path::new(path)) {
+            if remove_if_present(&tmp)? {
+                done.push(format!("removed {}", tmp.display()));
+            }
+        }
+    }
+
+    done.extend(agent::remove_for_all_users(purge));
+
+    if done.is_empty() && problems.is_empty() {
+        return Ok("wattbit is not installed; nothing to do.".into());
     }
     let mut summary = done.join("\n");
-    if !purge && Path::new(CONFIG_PATH).exists() {
+    if fs::symlink_metadata(CLI_LINK).is_ok() {
         summary.push_str(&format!(
-            "\nKept {CONFIG_PATH} (pass --purge to delete it)."
+            "\nLeft {CLI_LINK} in place: it is not wattbit's link."
         ));
     }
+    if !purge {
+        summary.push_str(&format!(
+            "\nKept your settings ({CONFIG_PATH}) and usage history; pass --purge to delete them."
+        ));
+    }
+    for problem in problems {
+        summary.push_str(&format!("\nWarning: {problem}"));
+    }
     Ok(summary)
+}
+
+/// Leftovers of interrupted atomic writes to `path`.
+fn temp_files_of(path: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!(".{}.tmp.", name.to_string_lossy());
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 #[cfg(test)]

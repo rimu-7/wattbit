@@ -627,11 +627,12 @@ impl Controller {
 
     /// Restores factory behaviour before the daemon exits. While another
     /// charge limiter runs, only state wattbit itself set is undone.
-    pub async fn shutdown(&self) {
+    /// Returns what could not be restored.
+    pub async fn shutdown(&self) -> Vec<String> {
         let mut st = self.state.lock().await;
         st.assertions = Assertions::default();
         if self.read_only {
-            return;
+            return Vec::new();
         }
         let foreign = !st.conflicts.is_empty();
         let mut errors = Vec::new();
@@ -640,6 +641,12 @@ impl Controller {
         }
         if self.caps.mcl.is_usable() && (!foreign || st.owns_mcl) {
             self.ensure_mcl(None, true, &mut errors).await;
+        }
+        // BCLM survives the daemon (and, on some Macs, a restart), so a
+        // limit left in it would outlive an uninstall.
+        if self.caps.firmware_limit.is_usable() && !foreign {
+            self.ensure_firmware_limit(BCLM_MAX, true, &mut errors)
+                .await;
         }
         if self.caps.adapter_control.is_usable() && (!foreign || st.owns_adapter_cut) {
             self.ensure_adapter(true, true, &mut errors).await;
@@ -662,6 +669,24 @@ impl Controller {
         } else {
             log!("factory charging behaviour restored");
         }
+        errors
+    }
+
+    /// Restores factory behaviour when no daemon is left to do it, for
+    /// `uninstall-service`: a daemon that crashed or was killed may have
+    /// left charging inhibited or the adapter cut. Other charge limiters'
+    /// state is left alone, since nothing here knows what wattbit set.
+    /// Returns what could not be restored.
+    pub async fn restore_factory(&self) -> Vec<String> {
+        {
+            let mut st = self.state.lock().await;
+            self.refresh_conflicts(&mut st).await;
+            if st.conflicts.is_empty() && self.caps.magsafe_led.is_usable() {
+                // Makes `shutdown` hand the LED back to the system.
+                st.led = Some(LedMode::System);
+            }
+        }
+        self.shutdown().await
     }
 
     pub async fn handle_call(&self, call: Call) -> Result<Reply, RpcError> {
@@ -790,10 +815,17 @@ impl Controller {
         log!("charge limit set to {actual_upper}% / {actual_lower}%");
         self.reconcile_locked(&mut st).await;
         Self::applied(&st, "the charge limit")?;
-        let mut message = format!(
-            "Charge limit set: charging stops at {actual_upper}% and resumes below {actual_lower}% ({} mode).",
-            mode.label()
-        );
+        let mut message = if mode == ChargeControlMode::Mcl || mode == ChargeControlMode::FirmwareLimit {
+            format!(
+                "Charge limit set: {actual_upper}% ({} mode).",
+                mode.label()
+            )
+        } else {
+            format!(
+                "Charge limit set: charging stops at {actual_upper}% and resumes below {actual_lower}% ({} mode).",
+                mode.label()
+            )
+        };
         if let Some(n) = note {
             message.push_str(&n);
         }

@@ -62,9 +62,10 @@ pub enum Command {
     },
     /// Install the daemon as a LaunchDaemon and start it (requires root).
     InstallService,
-    /// Stop and remove the LaunchDaemon, restoring factory charging (requires root).
+    /// Remove wattbit: restore factory charging, delete the daemon and its
+    /// files, and stop every user's speed meter (requires root).
     UninstallService {
-        /// Also delete the configuration file.
+        /// Also delete the settings and every user's usage history.
         #[arg(long)]
         purge: bool,
     },

@@ -51,6 +51,9 @@ macro_rules! log {
 /// LaunchAgent label.
 pub const LABEL: &str = "com.wattbit.speed";
 
+/// The meter's data directory, relative to the user's home.
+pub const DATA_DIR: &str = "Library/Application Support/wattbit";
+
 /// Sampling interval used when none is given.
 pub const DEFAULT_INTERVAL_SECONDS: f64 = 1.0;
 
@@ -109,15 +112,20 @@ impl SpeedPaths {
     pub fn resolve() -> anyhow::Result<Self> {
         let dir = match std::env::var_os("WATTBIT_SPEED_DIR") {
             Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => home()?.join("Library/Application Support/wattbit"),
+            _ => home()?.join(DATA_DIR),
         };
-        Ok(Self {
+        Ok(Self::at(dir))
+    }
+
+    /// The files the meter keeps in `dir`.
+    pub fn at(dir: PathBuf) -> Self {
+        Self {
             store: dir.join("speed.json"),
             pid: dir.join("speed.pid"),
             socket: dir.join("speed.sock"),
             log: dir.join("speed.log"),
             dir,
-        })
+        }
     }
 
     /// The LaunchAgent property list, under the user's `Library`.
@@ -425,6 +433,139 @@ fn ensure_user(command: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Each speed meter's name, login item label and data directory (relative
+/// to the home): wattbit's, and berry's from before the rename.
+const METERS: [(&str, &str, &str); 2] = [
+    ("speed meter", LABEL, DATA_DIR),
+    (
+        "old berry speed meter",
+        legacy::SPEED_LABEL,
+        legacy::SPEED_DIR,
+    ),
+];
+
+/// Stops and removes the speed meter of every user on this Mac, for
+/// `uninstall-service` (runs as root). Usage histories are kept unless
+/// `purge` is set. Best effort: problems are reported, never fatal, so the
+/// rest of the uninstall still happens. Returns one line per action taken.
+pub fn remove_for_all_users(purge: bool) -> Vec<String> {
+    let mut done = Vec::new();
+    for (home, uid) in user_homes() {
+        for (name, label, data_dir) in METERS {
+            remove_meter(&home, uid, name, label, data_dir, purge, &mut done);
+        }
+    }
+    done
+}
+
+/// Home directories with the uid that owns each: everything under /Users
+/// but root's (/Users/Shared), plus the home of the user behind sudo when
+/// it lives elsewhere.
+fn user_homes() -> Vec<(PathBuf, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut homes: Vec<(PathBuf, u32)> = fs::read_dir("/Users")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            // A symlink under /Users is not a home.
+            let meta = fs::symlink_metadata(entry.path()).ok()?;
+            (meta.is_dir() && meta.uid() != 0).then(|| (entry.path(), meta.uid()))
+        })
+        .collect();
+    if let Some(home) = sudo_user_home() {
+        if !homes.iter().any(|(path, _)| *path == home.0) {
+            homes.push(home);
+        }
+    }
+    homes
+}
+
+fn sudo_user_home() -> Option<(PathBuf, u32)> {
+    use std::os::unix::ffi::OsStrExt;
+    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    // SAFETY: getpwuid returns null or a record in static storage, which
+    // is copied out before anything else can overwrite it.
+    let home = unsafe {
+        let record = libc::getpwuid(uid);
+        if record.is_null() || (*record).pw_dir.is_null() {
+            return None;
+        }
+        let dir = std::ffi::CStr::from_ptr((*record).pw_dir);
+        PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()))
+    };
+    (uid != 0 && home.is_dir()).then_some((home, uid))
+}
+
+/// Stops one user's meter and removes its login item, and with `purge` its
+/// data directory. Only files that `uid` owns inside `home` are touched,
+/// so a symlink planted in a home cannot steer root's deletions elsewhere.
+fn remove_meter(
+    home: &Path,
+    uid: u32,
+    name: &str,
+    label: &str,
+    data_dir: &str,
+    purge: bool,
+    done: &mut Vec<String>,
+) {
+    use std::os::unix::fs::MetadataExt;
+    let owned = |path: &Path| {
+        let real = fs::symlink_metadata(path)
+            .is_ok_and(|meta| meta.uid() == uid && !meta.file_type().is_symlink());
+        let inside = path
+            .canonicalize()
+            .ok()
+            .zip(home.canonicalize().ok())
+            .is_some_and(|(path, home)| path.starts_with(home));
+        real && inside
+    };
+
+    let target = format!("gui/{uid}/{label}");
+    if service::loaded(&target).unwrap_or(false) {
+        match service::bootout(&target) {
+            Ok(()) => done.push(format!("stopped the {name} of {}", home.display())),
+            Err(e) => done.push(format!("could not stop {target}: {e:#}")),
+        }
+    }
+
+    let plist = home
+        .join("Library/LaunchAgents")
+        .join(format!("{label}.plist"));
+    let plist_is_ours = owned(&plist)
+        && fs::read_to_string(&plist)
+            .is_ok_and(|text| text.contains(&format!("<string>{label}</string>")));
+    if plist_is_ours {
+        match fs::remove_file(&plist) {
+            Ok(()) => done.push(format!("removed {}", plist.display())),
+            Err(e) => done.push(format!("could not remove {}: {e}", plist.display())),
+        }
+    }
+
+    let dir = home.join(data_dir);
+    if !(owned(&dir) && dir.is_dir()) {
+        return;
+    }
+    let paths = SpeedPaths::at(dir);
+    // A meter started with `--no-launchd` has no login item; the pid file
+    // finds it. Never this process, whatever the pid file says.
+    if let Some(agent) = live_agent(&paths).filter(|agent| agent.pid != std::process::id()) {
+        if terminate(agent.pid, STOP_TIMEOUT) {
+            done.push(format!("stopped the {name} (pid {})", agent.pid));
+        } else {
+            done.push(format!("the {name} (pid {}) did not stop", agent.pid));
+        }
+    }
+    if purge {
+        match fs::remove_dir_all(&paths.dir) {
+            Ok(()) => done.push(format!("removed {}", paths.dir.display())),
+            Err(e) => done.push(format!("could not remove {}: {e}", paths.dir.display())),
+        }
+    } else {
+        remove_leftovers(&paths);
+    }
 }
 
 fn remove_leftovers(paths: &SpeedPaths) {
@@ -1228,6 +1369,96 @@ mod tests {
             log: dir.join("speed.log"),
             dir,
         }
+    }
+
+    /// A private home with an installed meter, under a label no real
+    /// launchd job uses, so uninstall tests never touch the user's own.
+    struct Home {
+        path: PathBuf,
+    }
+
+    const TEST_LABEL: &str = "com.wattbit.uninstall-test";
+    const TEST_DIR: &str = "Library/Application Support/wattbit-uninstall-test";
+
+    impl Home {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("wattbit-home-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            let data = path.join(TEST_DIR);
+            fs::create_dir_all(&data).unwrap();
+            fs::create_dir_all(path.join("Library/LaunchAgents")).unwrap();
+            fs::write(self_plist(&path), format!("<string>{TEST_LABEL}</string>")).unwrap();
+            fs::write(data.join("speed.json"), b"{}").unwrap();
+            fs::write(data.join("speed.pid"), r#"{"pid":1,"started_at":0}"#).unwrap();
+            Self { path }
+        }
+
+        fn remove(&self, purge: bool) -> Vec<String> {
+            let mut done = Vec::new();
+            // SAFETY: geteuid has no preconditions.
+            let uid = unsafe { libc::geteuid() };
+            remove_meter(
+                &self.path, uid, "meter", TEST_LABEL, TEST_DIR, purge, &mut done,
+            );
+            done
+        }
+    }
+
+    fn self_plist(home: &Path) -> PathBuf {
+        home.join("Library/LaunchAgents")
+            .join(format!("{TEST_LABEL}.plist"))
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn uninstall_keeps_usage_history_without_purge() {
+        let home = Home::new("keep");
+        let done = home.remove(false);
+        assert!(!self_plist(&home.path).exists(), "{done:?}");
+        let data = home.path.join(TEST_DIR);
+        assert!(data.join("speed.json").exists());
+        assert!(!data.join("speed.pid").exists());
+    }
+
+    #[test]
+    fn uninstall_purge_deletes_the_data_directory() {
+        let home = Home::new("purge");
+        let done = home.remove(true);
+        assert!(!self_plist(&home.path).exists(), "{done:?}");
+        assert!(!home.path.join(TEST_DIR).exists(), "{done:?}");
+        // Nothing is left to do the second time.
+        assert!(home.remove(true).is_empty());
+    }
+
+    #[test]
+    fn uninstall_leaves_foreign_login_items_alone() {
+        let home = Home::new("foreign");
+        fs::write(
+            self_plist(&home.path),
+            b"<string>com.example.other</string>",
+        )
+        .unwrap();
+        home.remove(true);
+        assert!(self_plist(&home.path).exists());
+    }
+
+    #[test]
+    fn uninstall_does_not_follow_a_symlinked_data_directory() {
+        let home = Home::new("symlink");
+        let elsewhere = home.path.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("keep.txt"), b"not wattbit's").unwrap();
+        let data = home.path.join(TEST_DIR);
+        fs::remove_dir_all(&data).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &data).unwrap();
+        home.remove(true);
+        assert!(elsewhere.join("keep.txt").exists());
     }
 
     #[test]

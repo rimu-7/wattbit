@@ -205,6 +205,34 @@ pub async fn run(options: DaemonOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Puts the charging hardware back to factory behaviour without a running
+/// daemon (requires root); see [`Controller::restore_factory`]. Returns
+/// what could not be restored.
+pub fn restore_factory() -> anyhow::Result<Vec<String>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let hardware = timeout(
+            STARTUP_PROBE_TIMEOUT,
+            tokio::task::spawn_blocking(|| Hardware::open(true)),
+        )
+        .await
+        .context("probing hardware timed out")?
+        .context("hardware probe task failed")?;
+        // Nothing is saved: restoring never commits a setting.
+        let controller = Controller::new(
+            hardware,
+            ConfigStore::new(crate::CONFIG_PATH),
+            Config::default(),
+            None,
+            PathBuf::from(crate::SOCKET_PATH),
+            false,
+        );
+        Ok(controller.restore_factory().await)
+    })
+}
+
 fn log_capabilities(hardware: &Hardware) {
     let caps = hardware.capabilities();
     let describe = |s: &Support| match s.reason() {
