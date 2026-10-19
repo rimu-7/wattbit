@@ -815,11 +815,10 @@ impl Controller {
         log!("charge limit set to {actual_upper}% / {actual_lower}%");
         self.reconcile_locked(&mut st).await;
         Self::applied(&st, "the charge limit")?;
-        let mut message = if mode == ChargeControlMode::Mcl || mode == ChargeControlMode::FirmwareLimit {
-            format!(
-                "Charge limit set: {actual_upper}% ({} mode).",
-                mode.label()
-            )
+        let mut message = if mode == ChargeControlMode::Mcl
+            || mode == ChargeControlMode::FirmwareLimit
+        {
+            format!("Charge limit set: {actual_upper}% ({} mode).", mode.label())
         } else {
             format!(
                 "Charge limit set: charging stops at {actual_upper}% and resumes below {actual_lower}% ({} mode).",

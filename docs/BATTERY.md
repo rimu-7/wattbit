@@ -172,7 +172,9 @@ and tests it before using it:
 Safeguards:
 
 - **Normal charging comes back when wattbit stops,** for an update, an
-  uninstall or a shutdown.
+  uninstall or a shutdown. Uninstalling also resets the hardware itself,
+  in case the service had crashed: charging allowed, the charger in use,
+  the native and firmware limits off, and the MagSafe LED back to normal.
 - **A 10% safety floor** for the charger, as described above.
 - **No guessing.** wattbit only writes hardware values it recognizes, and
   reads every change back to confirm it worked.

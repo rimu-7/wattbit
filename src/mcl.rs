@@ -365,8 +365,13 @@ mod tests {
 
         // Test disable
         mcl.disable().expect("failed disabling MCL");
-        assert!(!mcl.is_enabled().expect("failed checking is_enabled after disable"));
-        assert_eq!(mcl.get_limit().expect("failed getting limit after disable"), 100);
+        assert!(!mcl
+            .is_enabled()
+            .expect("failed checking is_enabled after disable"));
+        assert_eq!(
+            mcl.get_limit().expect("failed getting limit after disable"),
+            100
+        );
 
         // Restore to 85% for user test
         mcl.set_limit(85).expect("failed setting MCL limit to 85");

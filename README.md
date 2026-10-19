@@ -122,8 +122,31 @@ version, and keeps your charge limit, settings and usage history.
 curl -fsSL https://raw.githubusercontent.com/rimu-7/wattbit/main/install.sh | bash -s -- --uninstall
 ```
 
-Normal charging is restored immediately. Add `--purge` to also delete your
-settings and usage history.
+Normal charging is restored immediately, even if the battery service had
+crashed. Add `--purge` to also delete your settings and usage history,
+leaving nothing of wattbit behind:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rimu-7/wattbit/main/install.sh | bash -s -- --uninstall --purge
+```
+
+The uninstaller removes:
+
+| What | Where |
+| --- | --- |
+| Battery service and its log | `/Library/LaunchDaemons/com.wattbit.daemon.plist`, `/Library/PrivilegedHelperTools/wattbitd`, `/var/run/wattbit.sock`, `/var/log/wattbit.log` |
+| The `wattbit` command | `/usr/local/bin/wattbit` (only if it links to wattbit) |
+| Speed meter, for every user on the Mac | `~/Library/LaunchAgents/com.wattbit.speed.plist` |
+| Settings (`--purge`) | `/etc/wattbit.json` |
+| Usage history, for every user (`--purge`) | `~/Library/Application Support/wattbit` |
+| Anything left from berry, wattbit's old name | the same paths with `berry` in place of `wattbit` |
+
+It finishes by checking that none of these is left, and lists any that is.
+If wattbit's binary was already deleted, the uninstaller downloads a copy
+to restore charging, and removes the rest by hand if it cannot.
+
+Without the installer, `sudo wattbit uninstall-service --purge` restores
+charging and removes the same files.
 
 ## Commands
 
