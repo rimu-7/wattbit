@@ -86,7 +86,7 @@ Options go after `bash -s --`, for example `... | bash -s -- --no-speed`:
 | Option | What it does |
 | --- | --- |
 | `--no-speed` | Don't turn on the speed meter |
-| `--version 0.5.0` | Install a specific release |
+| `--version 0.6.0` | Install a specific release |
 | `--from-source` | Build from source with Rust instead of downloading |
 | `--uninstall [--purge]` | Remove wattbit (`--purge` also deletes settings and history) |
 
